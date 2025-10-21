@@ -1,0 +1,31 @@
+wandb:
+  enabled: true
+  project: epsilon-mm3
+  entity: null
+  run_name: mm3_transformer_run
+  mode: online
+
+training:
+  num_epochs: 100
+  learning_rate: 0.001
+  batch_size: 64
+  batches_per_epoch: 10
+  weighted_loss: false
+
+model:
+  n_layers: 4
+  d_model: 128
+  n_heads: 4
+  d_mlp: 512
+  seed: 0
+
+mm3:
+  n_ctx: 7
+  bos: false
+  x: 0.15
+  a: 0.6
+
+device: auto
+
+belief_regression:
+  intervals: 4
