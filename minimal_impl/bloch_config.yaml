@@ -32,7 +32,7 @@ model:
   seed: 42
 
 bloch_walk:
-  n_ctx: 8
+  n_ctx: 6
   bos: false
   alpha: 1.0
   beta: 7.14142842854285  # sqrt(51) - canonical parameter from paper

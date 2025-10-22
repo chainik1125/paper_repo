@@ -7,6 +7,12 @@ used in the paper runs.
 """
 from __future__ import annotations
 
+if __package__ in (None, ""):
+    import sys
+    from pathlib import Path as _Path
+
+    sys.path.append(str(_Path(__file__).resolve().parent.parent))
+
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +23,7 @@ import yaml
 
 from minimal_impl.mm3 import generate_mm3_transformer_data, run_belief_regression
 from minimal_impl.model import TransformerParams, create_hooked_transformer
-from minimal_impl.utils import training_loop, _rmse
+from minimal_impl.utils import training_loop
 
 
 @dataclass
@@ -104,9 +110,12 @@ def run_exact_training(cfg: ExactConfig) -> None:
         dataset.loss_lower_bound,
     )
 
+    def _rmse_tensor(tensor: torch.Tensor) -> float:
+        return torch.sqrt(torch.mean(tensor.float() ** 2)).item()
+
     def epoch_callback(step: int, train_loss: torch.Tensor, val_loss: torch.Tensor) -> None:
-        train_rmse = _rmse(train_loss)
-        val_rmse = _rmse(val_loss)
+        train_rmse = _rmse_tensor(train_loss)
+        val_rmse = _rmse_tensor(val_loss)
         if step % 100 == 0 or step < 0:
             print(
                 f"[Step {step}] train RMSE={train_rmse:.6f} "
@@ -125,8 +134,8 @@ def run_exact_training(cfg: ExactConfig) -> None:
         epoch_callback=epoch_callback,
     )
 
-    final_train_rmse = _rmse(results.train_losses[-1])
-    final_val_rmse = _rmse(results.val_losses[-1])
+    final_train_rmse = _rmse_tensor(results.train_losses[-1])
+    final_val_rmse = _rmse_tensor(results.val_losses[-1])
     print(
         f"[Exact] Final RMSE -> train={final_train_rmse:.6f} "
         f"validation={final_val_rmse:.6f}"
@@ -165,4 +174,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
