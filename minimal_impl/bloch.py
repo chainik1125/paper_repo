@@ -1,5 +1,5 @@
 """
-Utility helpers for constructing the Mess3 (MM3) process and enumerating the
+Utility helpers for constructing the Bloch Walk (Tom Quantum) process and enumerating the
 exact distribution over transformer input sequences.
 """
 from __future__ import annotations
@@ -13,20 +13,19 @@ import argparse
 from dataclasses import dataclass
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
 import yaml
 
 from epsilon_transformers.process.GHMM import TransitionMatrixGHMM
-from epsilon_transformers.process.transition_matrices import mess3 as _mess3_matrix
+from epsilon_transformers.process.transition_matrices import tom_quantum as _tom_quantum_matrix
 from epsilon_transformers.training.dataloader import generate_all_seqs
 from minimal_impl.model import TransformerParams, create_hooked_transformer
 from minimal_impl.utils import training_loop
 from transformer_lens import HookedTransformer
 from epsilon_transformers.analysis.activation_analysis import get_beliefs_for_nn_inputs
-from minimal_impl.modified_funcs import run_belief_regression_gpu
 
 try:
     import wandb
@@ -37,9 +36,9 @@ ArrayLike = Union[np.ndarray, torch.Tensor]
 
 
 @dataclass(frozen=True)
-class MM3Dataset:
+class BlochDataset:
     """
-    Container holding the complete MM3 sequence distribution.
+    Container holding the complete Bloch Walk sequence distribution.
 
     Attributes:
         transformer_inputs: Array of shape (num_seqs, seq_len) with BOS tokens if requested.
@@ -62,7 +61,7 @@ class MM3Dataset:
         rng: Optional[Union[np.random.Generator, torch.Generator]] = None,
     ) -> Tuple[ArrayLike, float]:
         """
-        Sample a sequence according to the exact MM3 distribution.
+        Sample a sequence according to the exact Bloch Walk distribution.
 
         Args:
             rng: Optional random generator. Use ``torch.Generator`` when ``backend == 'torch'``.
@@ -102,49 +101,49 @@ def _resolve_device(device: Optional[Union[str, torch.device]]) -> torch.device:
     return torch.device(device)
 
 
-def build_mm3_process(x: float = 0.15, a: float = 0.6) -> TransitionMatrixGHMM:
+def build_bloch_process(alpha: float = 1.0, beta: float = 7.14142842854285) -> TransitionMatrixGHMM:
     """
-    Instantiate the MM3 process using the canonical parameters from the paper.
+    Instantiate the Bloch Walk process using the canonical parameters from the paper.
 
     Args:
-        x: Reset probability parameter.
-        a: Self-transition parameter.
+        alpha: First parameter for the Bloch Walk dynamics.
+        beta: Second parameter for the Bloch Walk dynamics.
 
     Returns:
-        A ``TransitionMatrixGHMM`` representing the MM3 process.
+        A ``TransitionMatrixGHMM`` representing the Bloch Walk process.
     """
-    process = TransitionMatrixGHMM(_mess3_matrix(x=x, a=a))
-    process.name = "mess3"
+    process = TransitionMatrixGHMM(_tom_quantum_matrix(alpha=alpha, beta=beta))
+    process.name = "tom_quantum"
     return process
 
 
-def generate_mm3_transformer_data(
+def generate_bloch_transformer_data(
     n_ctx: int,
     *,
     bos: bool = True,
-    x: float = 0.15,
-    a: float = 0.6,
+    alpha: float = 1.0,
+    beta: float = 7.14142842854285,
     device: Optional[Union[str, torch.device]] = "auto",
     as_numpy: bool = True,
-) -> MM3Dataset:
+) -> BlochDataset:
     """
-    Enumerate every possible MM3 transformer input sequence and its probability.
+    Enumerate every possible Bloch Walk transformer input sequence and its probability.
 
     Args:
         n_ctx: Context length used by the transformer (tokens available to predict the next token).
         bos: Whether to prefix sequences with the BOS token (index equals vocab size).
-        x: Reset probability parameter passed to the MM3 transition matrix.
-        a: Self-transition parameter passed to the MM3 transition matrix.
+        alpha: First parameter passed to the Bloch Walk transition matrix.
+        beta: Second parameter passed to the Bloch Walk transition matrix.
         device: Torch device specifier. Use ``"auto"`` (default) to pick CUDA when available.
         as_numpy: When ``True`` (default), convert outputs to NumPy arrays. Set to ``False`` to keep tensors on ``device``.
 
     Returns:
-        ``MM3Dataset`` bundling the sequences, their probabilities, and auxiliary metadata.
+        ``BlochDataset`` bundling the sequences, their probabilities, and auxiliary metadata.
     """
     if n_ctx < 1:
         raise ValueError("n_ctx must be at least 1.")
 
-    process = build_mm3_process(x=x, a=a)
+    process = build_bloch_process(alpha=alpha, beta=beta)
     torch_device = _resolve_device(device)
 
     # We add one extra position so (context, target) pairs have length n_ctx + 1.
@@ -158,7 +157,7 @@ def generate_mm3_transformer_data(
     bos_token = process.vocab_len if bos else None
 
     if as_numpy:
-        return MM3Dataset(
+        return BlochDataset(
             transformer_inputs=_to_numpy(transformer_inputs),
             probabilities=_to_numpy(probs),
             loss_lower_bound=_to_numpy(loss_lower_bound),
@@ -167,7 +166,7 @@ def generate_mm3_transformer_data(
             device=None,
         )
 
-    return MM3Dataset(
+    return BlochDataset(
         transformer_inputs=transformer_inputs,
         probabilities=probs,
         loss_lower_bound=loss_lower_bound,
@@ -177,12 +176,12 @@ def generate_mm3_transformer_data(
     )
 
 
-def sample_mm3_sequence(
+def sample_bloch_sequence(
     n_ctx: int,
     *,
     bos: bool = True,
-    x: float = 0.15,
-    a: float = 0.6,
+    alpha: float = 1.0,
+    beta: float = 7.14142842854285,
     device: Optional[Union[str, torch.device]] = "auto",
     as_numpy: bool = True,
     rng: Optional[Union[np.random.Generator, torch.Generator]] = None,
@@ -193,20 +192,20 @@ def sample_mm3_sequence(
     Args:
         n_ctx: Context length used by the transformer.
         bos: Whether to prefix sequences with the BOS token.
-        x: Reset probability parameter.
-        a: Self-transition parameter.
+        alpha: First parameter for the Bloch Walk dynamics.
+        beta: Second parameter for the Bloch Walk dynamics.
         device: Torch device specifier.
-        as_numpy: Whether to convert outputs to NumPy arrays (matches ``generate_mm3_transformer_data``).
+        as_numpy: Whether to convert outputs to NumPy arrays (matches ``generate_bloch_transformer_data``).
         rng: Optional random generator.
 
     Returns:
-        A tuple ``(sequence, probability)`` drawn from the MM3 distribution.
+        A tuple ``(sequence, probability)`` drawn from the Bloch Walk distribution.
     """
-    dataset = generate_mm3_transformer_data(
+    dataset = generate_bloch_transformer_data(
         n_ctx,
         bos=bos,
-        x=x,
-        a=a,
+        alpha=alpha,
+        beta=beta,
         device=device,
         as_numpy=as_numpy,
     )
@@ -288,27 +287,89 @@ def _save_checkpoint(
         print(f"Uploaded checkpoint to wandb: {checkpoint_name}")
 
 
+def _find_duplicate_prefixes(contexts: torch.Tensor) -> Dict[Tuple[int, ...], List[Tuple[int, int]]]:
+    prefix_map: Dict[Tuple[int, ...], List[Tuple[int, int]]] = {}
+    batch, n_ctx = contexts.shape
+    for seq_idx in range(batch):
+        seq = contexts[seq_idx]
+        for pos in range(n_ctx):
+            prefix = tuple(int(token) for token in seq[: pos + 1].tolist())
+            prefix_map.setdefault(prefix, []).append((seq_idx, pos))
+    return prefix_map
+
+
+def _deduplicate_data(
+    contexts: torch.Tensor,
+    activations: torch.Tensor,
+    beliefs: torch.Tensor,
+    probs: torch.Tensor,
+    *,
+    tolerance: float = 1e-8,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    prefix_map = _find_duplicate_prefixes(contexts)
+    unique_activations: List[torch.Tensor] = []
+    unique_beliefs: List[torch.Tensor] = []
+    unique_probs: List[float] = []
+
+    max_act_diff = 0.0
+    max_belief_diff = 0.0
+
+    for locations in prefix_map.values():
+        seq0, pos0 = locations[0]
+        act_ref = activations[seq0, pos0].clone()
+        belief_ref = beliefs[seq0, pos0].clone()
+        prob_sum = probs[seq0, pos0].item()
+
+        for seq_idx, pos in locations[1:]:
+            act_cur = activations[seq_idx, pos]
+            belief_cur = beliefs[seq_idx, pos]
+            prob_sum += probs[seq_idx, pos].item()
+
+            act_diff = torch.max(torch.abs(act_ref - act_cur)).item()
+            belief_diff = torch.max(torch.abs(belief_ref - belief_cur)).item()
+            max_act_diff = max(max_act_diff, act_diff)
+            max_belief_diff = max(max_belief_diff, belief_diff)
+
+            if act_diff > tolerance:
+                act_ref = 0.5 * (act_ref + act_cur)
+            if belief_diff > tolerance:
+                belief_ref = 0.5 * (belief_ref + belief_cur)
+
+        unique_activations.append(act_ref)
+        unique_beliefs.append(belief_ref)
+        unique_probs.append(prob_sum)
+
+    if max_act_diff > tolerance or max_belief_diff > tolerance:
+        print(
+            f"[Bloch] Warning: observed activation diff {max_act_diff:.3e}, "
+            f"belief diff {max_belief_diff:.3e} during deduplication."
+        )
+
+    activations_tensor = torch.stack(unique_activations).to(torch.float32)
+    beliefs_tensor = torch.stack(unique_beliefs).to(torch.float32)
+    probs_tensor = torch.tensor(unique_probs, dtype=torch.float32)
+    probs_tensor = probs_tensor / probs_tensor.sum()
+
+    return activations_tensor, beliefs_tensor, probs_tensor
+
+
 def run_belief_regression(
     model: HookedTransformer,
-    dataset: MM3Dataset,
+    dataset: BlochDataset,
     *,
-    mm3_cfg: Dict[str, Any],
+    bloch_cfg: Dict[str, Any],
     use_gpu: bool = False,
+    regularization_rcond: float = 1e-4,
 ) -> Dict[str, float]:
-    bos = mm3_cfg.get("bos", False)
-    n_ctx = mm3_cfg.get("n_ctx", dataset.transformer_inputs.shape[1] - 1)
-    process = build_mm3_process(
-        x=mm3_cfg.get("x", 0.15),
-        a=mm3_cfg.get("a", 0.6),
+    bos = bloch_cfg.get("bos", False)
+    n_ctx = bloch_cfg.get("n_ctx", dataset.transformer_inputs.shape[1] - 1)
+    process = build_bloch_process(
+        alpha=bloch_cfg.get("alpha", 1.0),
+        beta=bloch_cfg.get("beta", 7.14142842854285),
     )
 
     if use_gpu:
-        return run_belief_regression_gpu(
-            model,
-            dataset,
-            process=process,
-            mm3_cfg=mm3_cfg,
-        )
+        print("[Bloch] GPU regression not available; using CPU implementation instead.")
 
     seq_len = n_ctx + 1
     msp_depth = seq_len + (1 if bos else 2)
@@ -332,19 +393,23 @@ def run_belief_regression(
         tree_unnormalized,
         probs_dict,
     )
-    belief_states = beliefs_out[0].to(model.cfg.device)
+    belief_states = beliefs_out[0].to(torch.float32).cpu()
+    probs_matrix = None
+    if len(beliefs_out) >= 3 and isinstance(beliefs_out[2], torch.Tensor):
+        probs_matrix = beliefs_out[2].to(torch.float32).cpu()
+    if probs_matrix is None:
+        probs_matrix = dataset.probabilities.unsqueeze(1).repeat(1, contexts.shape[1]).to(torch.float32).cpu()
 
     was_training = model.training
     model.eval()
     with torch.no_grad():
         inputs = contexts.to(model.cfg.device)
 
-        # Extract activations from all layers (matching full regression pipeline)
         n_layers = model.cfg.n_layers
         activation_keys = (
-            ['blocks.0.hook_resid_pre'] +
-            [f'blocks.{i}.hook_resid_post' for i in range(n_layers)] +
-            ['ln_final.hook_normalized']
+            ['blocks.0.hook_resid_pre']
+            + [f'blocks.{i}.hook_resid_post' for i in range(n_layers)]
+            + ['ln_final.hook_normalized']
         )
 
         _, cache = model.run_with_cache(
@@ -352,57 +417,67 @@ def run_belief_regression(
             names_filter=lambda name: name in activation_keys,
         )
 
-        # Combine activations from all layers by concatenating along feature dimension
-        all_activations = []
+        collected_activations: List[torch.Tensor] = []
         for key in activation_keys:
-            all_activations.append(cache[key].detach())
+            if key in cache:
+                collected_activations.append(cache[key].detach().to("cpu", dtype=torch.float64))
+        if not collected_activations:
+            raise ValueError("No activations collected for regression.")
 
-        # Concatenate along the last dimension: (batch, seq, d_model) -> (batch, seq, d_model * n_layers)
-        activations = torch.cat(all_activations, dim=-1)
+        activations = torch.cat(collected_activations, dim=-1)
     if was_training:
         model.train()
 
-    acts_flat = activations.reshape(-1, activations.shape[-1]).float()
-    beliefs_flat = belief_states.reshape(-1, belief_states.shape[-1]).float()
-
-    # Use ridge regression instead of plain lstsq to avoid numerical instability
-    rcond = 1e-10  # Regularization strength
-    lstsq_result = torch.linalg.lstsq(acts_flat, beliefs_flat, rcond=rcond)
-    preds = acts_flat @ lstsq_result.solution
-    residuals = preds - beliefs_flat
-    mse = torch.mean(residuals.pow(2))
-    rmse_val = torch.sqrt(mse).item()
-
-    total_variance = torch.mean(
-        (beliefs_flat - beliefs_flat.mean(dim=0, keepdim=True)).pow(2)
+    contexts_cpu = contexts.cpu()
+    dedup_acts, dedup_beliefs, dedup_probs = _deduplicate_data(
+        contexts_cpu,
+        activations.cpu(),
+        belief_states,
+        probs_matrix,
     )
-    r_squared = 1.0 - (mse / total_variance) if total_variance > 0 else float("nan")
 
-    rank_value = lstsq_result.rank
-    if isinstance(rank_value, torch.Tensor):
-        rank_value = (
-            int(rank_value.item()) if rank_value.numel() == 1 else float("nan")
-        )
+    rcond_value = regularization_rcond
+    weights = dedup_probs.to(torch.float32)
+    sqrt_w = torch.sqrt(weights).unsqueeze(1)
+    X_w = dedup_acts * sqrt_w
+    Y_w = dedup_beliefs * sqrt_w
 
-    r_squared_value = (
-        float(r_squared.item()) if torch.isfinite(r_squared) else float("nan")
-    )
+    beta = torch.linalg.lstsq(X_w, Y_w, rcond=rcond_value).solution
+
+    preds = dedup_acts @ beta
+    residuals = preds - dedup_beliefs
+    sample_sq_err = torch.sum(residuals.pow(2), dim=1)
+    weighted_sq_err = torch.sum(weights * sample_sq_err)
+    mse_val = float(weighted_sq_err / weights.sum())
+    rmse_val = float(np.sqrt(mse_val))
+
+    weighted_mean = torch.sum(weights.unsqueeze(1) * dedup_beliefs, dim=0) / weights.sum()
+    sample_sq_total = torch.sum((dedup_beliefs - weighted_mean) ** 2, dim=1)
+    weighted_total = torch.sum(weights * sample_sq_total)
+    if weighted_total > 0:
+        r_squared = float(1.0 - (weighted_sq_err / weighted_total).item())
+    else:
+        r_squared = float("nan")
+
+    rank_value = torch.linalg.matrix_rank(
+        dedup_acts * torch.sqrt(weights).unsqueeze(1)
+    ).item()
 
     return {
         "belief_regression_rmse": rmse_val,
-        "belief_regression_mse": mse.item(),
+        "belief_regression_mse": mse_val,
         "belief_regression_rank": rank_value,
-        "belief_regression_r2": r_squared_value,
+        "belief_regression_r2": r_squared,
     }
 
 
-def main(config_path: str = "mm3_config.yaml") -> None:
+def main(config_path: str = "bloch_config.yaml") -> None:
     config = _load_config(Path(config_path))
 
     device_choice = config.get("device", "auto")
-    mm3_defaults = {"n_ctx": 7, "bos": False, "x": 0.15, "a": 0.6}
-    mm3_defaults.update(config.get("mm3", {}))
-    dataset = generate_mm3_transformer_data(**mm3_defaults, device=device_choice, as_numpy=False)
+    bloch_defaults = {"n_ctx": 7, "bos": False, "alpha": 1.0, "beta": 7.14142842854285}
+    bloch_defaults.update(config.get("bloch_walk", {}))
+    dataset = generate_bloch_transformer_data(**bloch_defaults, device=device_choice, as_numpy=False)
 
     params = TransformerParams(**{**config.get("model", {}), "device": device_choice})
     model = create_hooked_transformer(dataset, params)
@@ -445,6 +520,7 @@ def main(config_path: str = "mm3_config.yaml") -> None:
     regression_enabled = bool(regression_cfg.get("enabled", True))
     regression_intervals = int(regression_cfg.get("intervals", 0) or 0)
     regression_use_gpu = bool(regression_cfg.get("use_gpu", False))
+    regression_rcond = float(regression_cfg.get("rcond", 1e-4))
     if not regression_enabled:
         regression_steps = []
     elif regression_intervals > 0 and total_steps > 0:
@@ -481,8 +557,9 @@ def main(config_path: str = "mm3_config.yaml") -> None:
             metrics = run_belief_regression(
                 model,
                 dataset,
-                mm3_cfg=mm3_defaults,
+                bloch_cfg=bloch_defaults,
                 use_gpu=regression_use_gpu,
+                regularization_rcond=regression_rcond,
             )
             tag = "initial" if step == -1 else f"step_{step}"
             print(f"Belief regression ({tag}): {metrics}")
@@ -513,8 +590,9 @@ def main(config_path: str = "mm3_config.yaml") -> None:
         regression_metrics = run_belief_regression(
             model,
             dataset,
-            mm3_cfg=mm3_defaults,
+            bloch_cfg=bloch_defaults,
             use_gpu=regression_use_gpu,
+            regularization_rcond=regression_rcond,
         )
         print("Belief regression metrics:", regression_metrics)
     else:
@@ -539,11 +617,11 @@ def main(config_path: str = "mm3_config.yaml") -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train a HookedTransformer on MM3 sequences.")
+    parser = argparse.ArgumentParser(description="Train a HookedTransformer on Bloch Walk sequences.")
     parser.add_argument(
         "--config",
         type=str,
-        default=os.environ.get("MM3_CONFIG", "mm3_config.yaml"),
+        default=os.environ.get("BLOCH_CONFIG", "bloch_config.yaml"),
         help="Path to configuration YAML file.",
     )
     args = parser.parse_args()

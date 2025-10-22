@@ -1,15 +1,15 @@
 wandb:
   enabled: true
-  project: epsilon-mm3
+  project: epsilon-bloch-walk
   entity: dmitry2-uiuc
-  run_name: mm3_transformer_run
+  run_name: bloch_transformer_run
   mode: online
 
 training:
-  num_epochs: 200
-  learning_rate: 0.001
-  batch_size: 64
-  batches_per_epoch: 10
+  num_epochs: 1000
+  learning_rate: 1.0e-3
+  batch_size: 128
+  batches_per_epoch: 200
   weighted_loss: false
   beta1: 0.9
   beta2: 0.999
@@ -18,15 +18,15 @@ training:
 model:
   n_layers: 2
   d_model: 128
-  n_heads: 2
+  n_heads: 4
   d_mlp: 512
   seed: 0
 
-mm3:
-  n_ctx: 7
+bloch_walk:
+  n_ctx: 5
   bos: false
-  x: 0.05
-  a: 0.85
+  alpha: 1.0
+  beta: 7.14142842854285  # sqrt(51) - canonical parameter from paper
 
 device: auto
 
@@ -35,6 +35,6 @@ checkpoints:
   dir: ./checkpoints  # Directory where checkpoints will be saved
 
 belief_regression:
-  enabled: true
-  intervals: 2
-  use_gpu: true
+  intervals: 4
+  use_gpu: false
+  rcond: 1.0e-4

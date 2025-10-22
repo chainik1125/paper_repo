@@ -1,0 +1,28 @@
+viz:
+  # Path to the MM3 training configuration used to rebuild the architecture.
+  config: minimal_impl/mm3_config.yaml
+
+  # Describe how to retrieve the trained weights. Supplying a W&B run_id is enough
+  # when the MM3 config (or environment) provides the entity/project.
+  checkpoint:
+    run_id: 25pq51gr
+    artifact_alias: v0        # Optional: defaults to "latest" if omitted
+    # Either specify an explicit file name, or use a glob + index when multiple checkpoints exist.
+    # file: checkpoints/model_epoch_050.pt
+    pattern: checkpoints/model_epoch_*.pt
+    index: -1                 # -1 picks the last match (supports negatives / zero-based indexing)
+
+  # Figure export location.
+  output: Figs/mm3_fractal.png
+
+  # Activation name to probe from the residual stream cache.
+  activation: ln_final.hook_normalized
+
+  # Optional random subsample size for plotting.
+  sample: null
+
+  # Device configuration: "auto", "cpu", or "cuda".
+  device: auto
+
+  # Cache directory used when downloading checkpoints from W&B.
+  cache_dir: .wandb-cache

@@ -1,0 +1,50 @@
+wandb:
+  enabled: true
+  project: epsilon-bloch-walk
+  entity: dmitry2-uiuc
+  run_name: bloch_transformer_run
+  mode: online
+
+training:
+  num_epochs: 1000
+  learning_rate: 1.0e-4
+  batch_size: 128
+  batches_per_epoch: 200
+  weighted_loss: false
+  beta1: 0.9
+  beta2: 0.999
+  eps: 1.0e-8
+  scheduler:
+    name: ReduceLROnPlateau
+    params:
+      mode: min
+      factor: 0.5
+      patience: 1000
+      cooldown: 200
+      threshold: 1.0e-6
+
+model:
+  n_layers: 4
+  n_heads: 4
+  d_head: 16
+  d_model: 64
+  d_mlp: 256
+  seed: 42
+
+bloch_walk:
+  n_ctx: 8
+  bos: false
+  alpha: 1.0
+  beta: 7.14142842854285  # sqrt(51) - canonical parameter from paper
+
+device: auto
+
+checkpoints:
+  enabled: true  # Set to false to disable checkpoint saving
+  dir: ./checkpoints  # Directory where checkpoints will be saved
+
+belief_regression:
+  enabled: false
+  intervals: 2
+  use_gpu: false
+  rcond: 1.0e-4
