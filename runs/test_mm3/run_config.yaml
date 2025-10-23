@@ -1,0 +1,36 @@
+experiment_dir: ./runs/test_mm3
+run_id: mm3_test_run
+global_config:
+  device: cpu
+  wandb: false
+  wandb_project: test
+  sweep_id: test
+  process_dir: ./process_data
+  val_every: 1
+  scheduler: false
+  save_every: 5
+train_config:
+  learning_rate: 1.0e-3
+  batch_size: 32
+  batches_per_epoch: 2
+  bos: false
+  n_epochs: 1
+  train_type: normal
+model_config:
+  n_ctx: 3
+  act_fn: relu
+  normalization_type: LN
+  attn_only: false
+  seed: 0
+  dtype: float32
+  n_layers: 1
+  n_heads: 2
+  d_head: 8
+  d_model: 16
+  d_mlp: 32
+process_config:
+  mode: mm3
+  name: mess3
+  mm3:
+    x: 0.1
+    a: 0.7

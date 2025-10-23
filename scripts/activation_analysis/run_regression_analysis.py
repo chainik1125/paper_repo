@@ -11,9 +11,9 @@ optimal mappings between activations and theoretical belief states.
 
 # Configuration
 output_dir = "belief_regression_results"
-N_SPLITS = 10  # K-fold cross-validation splits
+N_SPLITS = 3  # K-fold cross-validation splits
 DEVICE = 'cpu'  # Device for data extraction and tensor storage
-REGRESSION_DEVICE = 'cuda'  # Device for RegressionAnalyzer (set to 'cpu' or 'cuda' if no MPS available)
+REGRESSION_DEVICE = 'cpu'  # Device for RegressionAnalyzer (set to 'cpu' or 'cuda' if no MPS available)
 RANDOM_STATE = 42
 ONLY_INITIAL_AND_FINAL = True  # Process only first and last checkpoints
 
@@ -569,4 +569,3 @@ for sweep, run_id_int in sweep_run_pairs:
         # Save each checkpoint's data to a separate file
         joblib.dump(save_data, f'{run_dir}/checkpoint_{ckpt_ind}.joblib')
         joblib.dump(classical_save_data, f'{run_dir}/markov3_checkpoint_{ckpt_ind}.joblib')
-

@@ -1,0 +1,25 @@
+# Example configuration for reg_test.py
+# This config must match the structure expected by prepare_msp_data
+
+model_config:
+  n_ctx: 7
+  n_layers: 2
+  d_model: 64  # From checkpoint: embed.W_E has shape [4, 64]
+  d_head: 16   # From checkpoint: W_Q has shape [4, 64, 16]
+  n_heads: 4   # From checkpoint: W_Q has shape [4, 64, 16]
+  d_mlp: 256   # From checkpoint: W_in has shape [64, 256]
+  d_vocab: 4   # 3 for mess3, 4 for tom_quantum, 5 for others
+  act_fn: gelu
+  seed: 0
+  dtype: float32
+
+process_config:
+  name: tom_quantum  # Options: mess3, tom_quantum, post_quantum, fanizza
+  alpha: 1.0      # Process parameter
+  beta: 7.14142842854285      # Process parameter
+
+global_config:
+  device: cpu  # Will be overridden by command line arg
+
+train_config:
+  bos: false   # Whether sequences have BOS token

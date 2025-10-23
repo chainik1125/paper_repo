@@ -1,15 +1,89 @@
+import argparse
+import collections
+import glob
+import os
+import tempfile
+from pathlib import Path
+
+import joblib
 import matplotlib.pyplot as plt
 import numpy as np
-import os
-import joblib
-import re
-import glob
-import collections
-from sklearn.decomposition import PCA
+import torch
+import wandb
+import yaml
 from matplotlib.patches import Patch
+from sklearn.decomposition import PCA
+
+from minimal_impl.regression import (
+    _combine_layer_activations,
+    compute_kfold_split,
+    deduplicate_data,
+    deduplicate_tensor,
+)
+from scripts.activation_analysis.config import (
+    RCOND_SWEEP_LIST,
+    TRANSFORMER_ACTIVATION_KEYS,
+)
+from scripts.activation_analysis.data_loading import ActivationExtractor
+from scripts.activation_analysis.regression import (
+    RegressionAnalyzer,
+    run_activation_to_beliefs_regression_kf,
+)
+from transformer_lens import HookedTransformer, HookedTransformerConfig
 
 # Define nested_dict_factory for joblib loading (important!)
 nested_dict_factory = collections.defaultdict
+
+
+def _instantiate_model(run_cfg: dict, checkpoint_path: Path, device: torch.device) -> HookedTransformer:
+    model_cfg = dict(run_cfg["model_config"])
+    model_cfg.setdefault("device", str(device))
+
+    if "d_vocab" not in model_cfg:
+        process_cfg = run_cfg.get("process_config", {})
+        name = process_cfg.get("name") or process_cfg.get("mode")
+        if name in {"tom_quantum", "bloch", "bloch_manual"}:
+            vocab_size = 4
+        elif name in {"mess3", "mm3"}:
+            vocab_size = 3
+        else:
+            vocab_size = int(process_cfg.get("d_vocab", 5))
+        model_cfg["d_vocab"] = vocab_size
+
+    dtype = model_cfg.get("dtype", "float32")
+    if isinstance(dtype, str):
+        model_cfg["dtype"] = getattr(torch, dtype)
+
+    hook_cfg = HookedTransformerConfig(**model_cfg)
+    model = HookedTransformer(hook_cfg)
+    state_dict = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(state_dict, strict=False)
+    model.to(device)
+    model.eval()
+    return model
+
+
+def _download_wandb_checkpoint(run_path: str, alias: str = "latest") -> Path:
+    api = wandb.Api()
+    run = api.run(run_path)
+    target_artifact = None
+    for artifact in run.logged_artifacts():
+        if artifact.type != "model":
+            continue
+        if alias in artifact.aliases or artifact.name.endswith(alias):
+            target_artifact = artifact
+            break
+    if target_artifact is None:
+        model_artifacts = [art for art in run.logged_artifacts() if art.type == "model"]
+        if not model_artifacts:
+            raise RuntimeError(f"No model artifacts found for run {run_path}")
+        target_artifact = model_artifacts[-1]
+
+    download_dir = Path(target_artifact.download(root=tempfile.mkdtemp(prefix="fig2_ckpt_")))
+    ckpt_files = list(download_dir.glob("*.pt"))
+    if not ckpt_files:
+        raise RuntimeError(f"No checkpoint files found in artifact {target_artifact.name}")
+    return ckpt_files[0]
 
 
 def load_ground_truth(run_dir: str, filename: str = 'ground_truth_data.joblib') -> dict:
@@ -122,7 +196,7 @@ def _get_plotting_params(experiment_name: str) -> dict:
             'project_to_simplex': False, 
             'inds_to_plot': [1,2] 
         })
-    elif 'tomqa' in name_lower or 'tomqb' in name_lower:
+    elif 'tomqa' in name_lower or 'tomqb' in name_lower or 'tom_quantum' in name_lower or 'bloch' in name_lower:
         params.update({ 
             'point_size': {'truth': 0.15, 'pred': 0.05}, 
             'min_alpha': 0.15, 
@@ -195,6 +269,173 @@ def _project_to_simplex(data):
     x = -y_temp
     y = x_temp
     return x, y
+
+
+def _normalize_weights(weights: np.ndarray) -> np.ndarray:
+    weights = np.asarray(weights, dtype=np.float64)
+    if weights.size == 0:
+        return weights
+    w_min = weights.min()
+    w_max = weights.max()
+    if w_max - w_min < 1e-12:
+        return np.zeros_like(weights)
+    return (weights - w_min) / (w_max - w_min)
+
+
+def plot_single_bloch(
+    run_config_path: Path,
+    wandb_run_path: str,
+    checkpoint_alias: str,
+    output_path: Path,
+    layer: str = "combined",
+    n_splits: int = 10,
+    device: str = "cpu",
+):
+    run_cfg = yaml.safe_load(run_config_path.read_text())
+    run_cfg = dict(run_cfg)
+    run_cfg.setdefault("global_config", {})["device"] = device
+    run_cfg.setdefault("train_config", {})
+    run_cfg.setdefault("model_config", {})
+
+    checkpoint_path = _download_wandb_checkpoint(wandb_run_path, alias=checkpoint_alias)
+    true_beliefs, predicted_beliefs, weights, metrics = _run_single_regression(
+        run_cfg,
+        checkpoint_path,
+        torch.device(device),
+        layer=layer,
+        n_splits=n_splits,
+    )
+
+    params = _get_plotting_params("tom_quantum_single")
+    gt_weights_norm = _normalize_weights(weights)
+    colors = plt.cm.viridis(gt_weights_norm if gt_weights_norm.size else np.zeros_like(weights))
+    colors[:, -1] = transform_for_alpha(weights, params["min_alpha"], params["transformation"])
+
+    x_true, y_true, pca = _calculate_plot_coords(
+        true_beliefs,
+        true_beliefs,
+        params["use_pca"],
+        params["project_to_simplex"],
+        params["inds_to_plot"],
+    )
+    x_pred, y_pred, _ = _calculate_plot_coords(
+        predicted_beliefs,
+        true_beliefs,
+        params["use_pca"],
+        params["project_to_simplex"],
+        params["inds_to_plot"],
+        pca_instance=pca,
+    )
+
+    fig, axes = plt.subplots(1, 2, figsize=(9, 4))
+    axes[0].scatter(x_true, y_true, color=colors, s=params["point_size"]["truth"], marker='.')
+    axes[0].set_title("Ground Truth Beliefs")
+    axes[0].set_axis_off()
+
+    axes[1].scatter(x_pred, y_pred, color=colors, s=params["point_size"]["pred"], marker='.')
+    axes[1].set_title(f"Predicted Beliefs ({layer})")
+    axes[1].set_axis_off()
+
+    rmse_value = metrics.get("rmse")
+    if isinstance(rmse_value, np.ndarray):
+        rmse_value = float(np.mean(rmse_value))
+    elif isinstance(rmse_value, (list, tuple)):
+        rmse_value = float(np.mean(rmse_value))
+    axes[1].text(
+        0.02,
+        0.95,
+        f"RMSE: {rmse_value:.4f}" if rmse_value is not None else "RMSE: N/A",
+        transform=axes[1].transAxes,
+        ha='left',
+        va='top',
+        fontsize=10,
+        bbox=dict(facecolor='white', alpha=0.6, edgecolor='none'),
+    )
+
+    fig.suptitle("Bloch Belief Geometry vs Combined-Layer Regression", fontsize=14)
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+    print(f"Saved figure to {output_path}")
+
+
+def _prepare_ground_truth(run_cfg: dict):
+    from epsilon_transformers.analysis.activation_analysis import prepare_msp_data
+
+    n_ctx = run_cfg.get("model_config", {}).get("n_ctx") or run_cfg.get("n_ctx")
+    if n_ctx is None:
+        raise ValueError("n_ctx must be specified in model_config or top-level config.")
+
+    run_cfg = dict(run_cfg)
+    run_cfg.setdefault("global_config", {}).setdefault("device", "cpu")
+    run_cfg.setdefault("train_config", {})
+    run_cfg["train_config"].setdefault("bos", False)
+    run_cfg["n_ctx"] = n_ctx
+
+    nn_inputs, nn_beliefs, _, nn_probs, _ = prepare_msp_data(run_cfg, run_cfg["model_config"])
+    dedup_probs, dedup_beliefs, dedup_indices, prefix_to_indices = deduplicate_data(
+        nn_inputs, nn_probs, nn_beliefs
+    )
+    return {
+        "nn_inputs": nn_inputs,
+        "dedup_probs": dedup_probs,
+        "dedup_beliefs": dedup_beliefs,
+        "prefix_to_indices": prefix_to_indices,
+    }
+
+
+def _run_single_regression(
+    run_cfg: dict,
+    checkpoint_path: Path,
+    device: torch.device,
+    layer: str = "combined",
+    n_splits: int = 10,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    gt = _prepare_ground_truth(run_cfg)
+    dedup_probs = gt["dedup_probs"].to(device)
+    dedup_beliefs = gt["dedup_beliefs"].to(device)
+    prefix_to_indices = gt["prefix_to_indices"]
+
+    kfold_indices = compute_kfold_split(dedup_probs, n_splits=n_splits)
+
+    model = _instantiate_model(run_cfg, checkpoint_path, device)
+    extractor = ActivationExtractor(device=str(device))
+    cache = extractor.extract_activations(
+        model,
+        gt["nn_inputs"],
+        "transformer",
+        relevant_activation_keys=TRANSFORMER_ACTIVATION_KEYS,
+    )
+    nn_acts = {layer_name: acts for layer_name, acts in cache.items()}
+    nn_acts["combined"] = _combine_layer_activations(nn_acts)
+    if layer not in nn_acts:
+        raise ValueError(f"Layer '{layer}' not found. Available: {list(nn_acts.keys())}")
+
+    dedup_acts, _ = deduplicate_tensor(prefix_to_indices, nn_acts[layer])
+    analyzer = RegressionAnalyzer(device=str(device), use_efficient_pinv=True)
+    results = run_activation_to_beliefs_regression_kf(
+        analyzer,
+        dedup_acts.to(device),
+        dedup_beliefs,
+        dedup_probs,
+        kfold_indices,
+        rcond_values=RCOND_SWEEP_LIST,
+    )
+    final_metrics = results.get("final_metrics", {})
+    preds = final_metrics.get("predictions")
+    if preds is None:
+        raise RuntimeError("Regression did not return predictions.")
+    return (
+        dedup_beliefs.cpu().numpy(),
+        preds,
+        dedup_probs.cpu().numpy(),
+        {
+            "rmse": final_metrics.get("rmse"),
+            "r2": final_metrics.get("r2"),
+            "best_rcond": results.get("best_overall_rcond"),
+        },
+    )
 
 
 def _calculate_plot_coords(beliefs_to_plot, gt_beliefs_for_pca, use_pca, project_to_simplex, inds_to_plot, pca_instance=None):
@@ -607,96 +848,23 @@ def visualize_belief_grid_with_metrics(
     return fig, axes
 
 
-# Main execution with command-line interface
 if __name__ == "__main__":
-    import argparse
-    import sys
-    from pathlib import Path
-    
-    # Add scripts directory to path for DataManager import
-    scripts_dir = Path(__file__).parent / 'scripts'
-    if str(scripts_dir) not in sys.path:
-        sys.path.insert(0, str(scripts_dir))
-    
-    try:
-        from data_manager import DataManager
-    except ImportError:
-        print("Warning: DataManager not available. Using local data only.")
-        DataManager = None
-    
-    parser = argparse.ArgumentParser(description="Generate Figure 2: Belief Grid Visualization")
-    parser.add_argument("--data-source", choices=['local', 'huggingface', 'auto'], default='auto',
-                       help="Data source for analysis files")
-    parser.add_argument("--data-dir", type=str, 
-                       default="scripts/activation_analysis/run_predictions_RCOND_FINAL",
-                       help="Local directory containing analysis files")
-    parser.add_argument("--output-dir", type=str, default="Figs",
-                       help="Output directory for plots")
-    parser.add_argument("--checkpoint", type=str, default="last",
-                       help="Target checkpoint ('last' or specific number)")
-    parser.add_argument("--layer", type=str, default="combined",
-                       help="Target layer for analysis")
-    
+    parser = argparse.ArgumentParser(description="Generate Bloch belief plot for a single checkpoint")
+    parser.add_argument("--run-config", type=Path, required=True, help="Path to train2 run_config.yaml")
+    parser.add_argument("--wandb-run", type=str, required=True, help="WandB run path (entity/project/run)")
+    parser.add_argument("--checkpoint-alias", type=str, default="latest", help="Artifact alias or checkpoint name")
+    parser.add_argument("--output", type=Path, default=Path("fig2_bloch_single.png"), help="Output image path")
+    parser.add_argument("--layer", type=str, default="combined", help="Activation layer to analyze")
+    parser.add_argument("--device", type=str, default="cpu", help="Device for regression (e.g., cpu or cuda:0)")
+    parser.add_argument("--n-splits", type=int, default=10, help="Number of KFold splits for regression")
+
     args = parser.parse_args()
-    
-    # Always use 3-row configuration
-    plot_config_grid = [
-        {'name': 'Mess3', 'gt_run': ("20241205175736", 23), 
-         'models': [("Transformer", ("20241205175736", 23)), ("LSTM", ("20241121152808", 55))]},
-        {'name': 'TomQA', 'gt_run': ("20241205175736", 17), 
-         'models': [("Transformer", ("20241205175736", 17)), ("LSTM", ("20241121152808", 49))]},
-        {'name': 'Moon Process', 'gt_run': ("20250421221507", 0), 
-         'models': [("Transformer", ("20250421221507", 0)), ("LSTM", ("20241121152808", 48))]},
-    ]
-    
-    # Set up data directory based on source with selective downloading
-    if DataManager is not None and args.data_source != 'local':
-        try:
-            dm = DataManager(source=args.data_source, data_dir=args.data_dir)
-            # Extract model IDs for targeted downloads
-            model_ids = []
-            for config in plot_config_grid:
-                for model_type, (sweep, run_id) in config.get('models', []):
-                    model_id = f"{sweep}_{run_id}"
-                    if model_id not in model_ids:  # Avoid duplicates
-                        model_ids.append(model_id)
-            
-            analysis_dir = dm.get_analysis_data_dir(model_ids=model_ids, download_all_checkpoints=False)
-            output_base_dir = str(analysis_dir)
-            print(f"Using data from: {output_base_dir}")
-        except Exception as e:
-            print(f"Error setting up DataManager: {e}")
-            print(f"Falling back to local data: {args.data_dir}")
-            output_base_dir = args.data_dir
-    else:
-        output_base_dir = args.data_dir
-        print(f"Using local data from: {output_base_dir}")
-    
-    print(f"Generating belief grid visualization...")
-    print(f"  Data source: {args.data_source}")
-    print(f"  Analysis directory: {output_base_dir}")
-    print(f"  Output directory: {args.output_dir}")
-    print(f"  Target checkpoint: {args.checkpoint}")
-    print(f"  Target layer: {args.layer}")
-    
-    # Generate simple output filename
-    output_filename = "Fig2.png"
-    
-    try:
-        # Call the visualization function
-        fig, axes = visualize_belief_grid_with_metrics(
-            plot_config=plot_config_grid,
-            output_base_dir=output_base_dir,
-            plot_output_dir=args.output_dir,
-            target_checkpoint=args.checkpoint,
-            target_layer=args.layer,
-            output_filename=output_filename,
-        )
-        
-        print(f"✅ Successfully generated: {args.output_dir}/{output_filename}")
-        
-    except Exception as e:
-        print(f"❌ Error generating visualization: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+    plot_single_bloch(
+        run_config_path=args.run_config,
+        wandb_run_path=args.wandb_run,
+        checkpoint_alias=args.checkpoint_alias,
+        output_path=args.output,
+        layer=args.layer,
+        n_splits=args.n_splits,
+        device=args.device,
+    )

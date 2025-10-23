@@ -183,13 +183,24 @@ def main():
     save_every = config['global_config'].get('save_every', 1)
     # Parse process parameters
 
-    process_cfg = config.get('process_config', {})
-    process_mode = process_cfg.get('mode')
+    process_cfg = config.get('process_config', {}) or {}
+    process_mode_raw = process_cfg.get('mode') or process_cfg.get('name')
+    process_mode = process_mode_raw.lower() if isinstance(process_mode_raw, str) else None
+
+    recognised_modes = {
+        'mm3_bloch_product',
+        'mm3',
+        'mess3',
+        'bloch',
+        'tom_quantum',
+    }
 
     process_data = None
-    if process_mode not in {'mm3_bloch_product', 'mm3', 'bloch'}:
-        process_data = load_process_data(config, config['global_config']['process_dir'])
-        print("process_data:", process_data)
+    if process_mode not in recognised_modes:
+        process_dir = config['global_config'].get('process_dir')
+        if process_dir:
+            process_data = load_process_data(config, process_dir)
+            print("process_data:", process_data)
 
     if process_mode == 'mm3_bloch_product':
         dataloader, loss_lower_bound, d_vocab = generate_mm3_bloch_product_data(
@@ -201,18 +212,24 @@ def main():
             batch_size=config['train_config']['batch_size'],
             device=device,
         )
-    elif process_mode == 'mm3':
+    elif process_mode in {'mm3', 'mess3'}:
+        mm3_params = process_cfg.get('mm3')
+        if mm3_params is None:
+            mm3_params = {k: process_cfg[k] for k in ('x', 'a') if k in process_cfg}
         dataloader, loss_lower_bound, d_vocab = generate_mm3_data(
-            process_cfg.get('mm3', process_cfg),
+            mm3_params,
             n_ctx=config['model_config']['n_ctx'],
             bos=config['train_config']['bos'],
             batches_per_epoch=config['train_config']['batches_per_epoch'],
             batch_size=config['train_config']['batch_size'],
             device=device,
         )
-    elif process_mode == 'bloch':
+    elif process_mode in {'bloch', 'tom_quantum'}:
+        bloch_params = process_cfg.get('bloch')
+        if bloch_params is None:
+            bloch_params = {k: process_cfg[k] for k in ('alpha', 'beta') if k in process_cfg}
         dataloader, loss_lower_bound, d_vocab = generate_bloch_data(
-            process_cfg.get('bloch', process_cfg),
+            bloch_params,
             n_ctx=config['model_config']['n_ctx'],
             bos=config['train_config']['bos'],
             batches_per_epoch=config['train_config']['batches_per_epoch'],
