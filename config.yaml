@@ -1,0 +1,68 @@
+_wandb:
+    value:
+        cli_version: 0.21.0
+        e:
+            bp0u68uxp0jy0i8og9cajc768m0y4evk:
+                args:
+                    - --config
+                    - minimal_impl/bloch_run_config.yaml
+                    - --parallel
+                    - --gpu_id
+                    - "0"
+                codePath: scripts/train2.py
+                codePathLocal: scripts/train2.py
+                cpu_count: 128
+                cpu_count_logical: 255
+                cudaVersion: "12.7"
+                disk:
+                    /:
+                        total: "107374182400"
+                        used: "9196826624"
+                email: dmitry2@illinois.edu
+                executable: /root/paper_repo/.venv/bin/python
+                git:
+                    commit: 2ce0b68dfd69f638e4169de0f5b51f70f7817169
+                    remote: https://github.com/chainik1125/paper_repo.git
+                gpu: NVIDIA A100-SXM4-80GB
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 6912
+                      memoryTotal: "85899345920"
+                      name: NVIDIA A100-SXM4-80GB
+                      uuid: GPU-74567ab7-c991-bf11-aec4-2f5462acea7a
+                host: 3907211d0a13
+                memory:
+                    total: "1081976520704"
+                os: Linux-6.5.0-28-generic-x86_64-with-glibc2.39
+                program: /root/paper_repo/scripts/train2.py
+                python: CPython 3.12.3
+                root: /root/paper_repo
+                startedAt: "2025-10-23T11:30:54.584959Z"
+                writerId: bp0u68uxp0jy0i8og9cajc768m0y4evk
+        m: []
+        python_version: 3.12.3
+        t:
+            "1":
+                - 1
+                - 5
+                - 11
+                - 49
+                - 51
+                - 53
+                - 71
+            "2":
+                - 1
+                - 5
+                - 11
+                - 49
+                - 51
+                - 53
+                - 71
+            "3":
+                - 13
+            "4": 3.12.3
+            "5": 0.21.0
+            "6": 4.53.0
+            "12": 0.21.0
+            "13": linux-x86_64

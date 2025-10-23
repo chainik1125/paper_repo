@@ -1,0 +1,33 @@
+wandb:
+  enabled: false
+
+training:
+  num_epochs: 100
+  learning_rate: 0.001
+  batch_size: 32
+  batches_per_epoch: 10
+  weighted_loss: false
+  beta1: 0.9
+  beta2: 0.999
+  eps: 1.0e-8
+
+model:
+  n_layers: 2
+  d_model: 64
+  n_heads: 2
+  d_mlp: 256
+  seed: 0
+
+mm3:
+  n_ctx: 4
+  bos: false
+  x: 0.05
+  a: 0.85
+
+device: cpu
+
+checkpoints:
+  enabled: false
+
+belief_regression:
+  enabled: false

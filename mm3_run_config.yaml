@@ -1,0 +1,36 @@
+config_path: mm3_run_config.yaml
+experiment_dir: ./results/mm3_test_run
+global_config:
+  device: cuda
+  output_dir: ./results
+  parallel: false
+  process_dir: ./process_data
+  save_every: 100
+  scheduler: true
+  sweep_id: 'mm3_test'
+  val_every: 1
+  wandb: true
+  wandb_project: quantum_transformer
+model_config:
+  act_fn: relu
+  attn_only: false
+  d_head: 16
+  d_mlp: 256
+  d_model: 64
+  dtype: float32
+  n_ctx: 6
+  n_heads: 4
+  n_layers: 4
+  normalization_type: LN
+  seed: 42
+process_config:
+  a: 0.85
+  name: mess3
+  x: 0.05
+run_id: mm3_test_run
+train_config:
+  batch_size: 128
+  batches_per_epoch: 200
+  bos: false
+  learning_rate: 0.0001
+  n_epochs: 20000

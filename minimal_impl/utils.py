@@ -72,6 +72,8 @@ def training_loop(
     batch_size: Optional[int] = None,
     batches_per_epoch: int = 1,
     epoch_callback: Optional[Callable[[int, torch.Tensor, torch.Tensor], None]] = None,
+    normalize_by_lower_bound: bool = False,
+    loss_lower_bound: Optional[torch.Tensor] = None,
 ) -> TrainingResult:
     """
     Train a ``HookedTransformer`` using sequences produced by ``generator``.
@@ -84,8 +86,12 @@ def training_loop(
             expected by the model, and ``probs`` should sum to one.
         num_epochs: Number of training epochs to execute.
         scheduler: Optional learning-rate scheduler.
-        weighted_loss: When ``True``, use the project’s ``train_epoch_all`` routine that weights
+        weighted_loss: When ``True``, use the project's ``train_epoch_all`` routine that weights
             each sequence by its probability; otherwise, default to standard sampling.
+        normalize_by_lower_bound: When ``True``, normalize losses by dividing by loss_lower_bound
+            (following scripts/train.py approach). Default is False.
+        loss_lower_bound: Per-position lower bound on achievable loss. Required if
+            normalize_by_lower_bound is True.
 
     Returns:
         ``TrainingResult`` containing per-epoch training and validation losses.
@@ -100,6 +106,12 @@ def training_loop(
         batches_per_epoch=batches_per_epoch,
     )
 
+    # Validate normalization parameters
+    if normalize_by_lower_bound:
+        if loss_lower_bound is None:
+            raise ValueError("loss_lower_bound must be provided when normalize_by_lower_bound=True")
+        loss_lower_bound = loss_lower_bound.to(device)
+
     train_losses: list[torch.Tensor] = []
     val_losses: list[torch.Tensor] = []
     steps: list[int] = []
@@ -108,7 +120,10 @@ def training_loop(
     progress = tqdm(total=total_steps, desc="Training", unit="step")
 
     # Evaluate before any updates to capture random-initialization metrics.
-    initial_val_loss = validate_epoch_all(model, dataloader, scheduler=None).detach().cpu()
+    initial_val_loss = validate_epoch_all(model, dataloader, scheduler=None)
+    if normalize_by_lower_bound:
+        initial_val_loss = initial_val_loss / loss_lower_bound
+    initial_val_loss = initial_val_loss.detach().cpu()
     val_losses.append(initial_val_loss)
     train_losses.append(initial_val_loss)
     steps.append(-1)
@@ -125,9 +140,15 @@ def training_loop(
     step_idx = 0
     for epoch in range(num_epochs):
         if weighted_loss:
-            epoch_loss = train_epoch_all(model, optimizer, dataloader, scheduler).detach().cpu()
+            epoch_loss = train_epoch_all(model, optimizer, dataloader, scheduler)
+            val_loss = validate_epoch_all(model, dataloader, scheduler=None)
 
-            val_loss = validate_epoch_all(model, dataloader, scheduler=None).detach().cpu()
+            if normalize_by_lower_bound:
+                epoch_loss = epoch_loss / loss_lower_bound
+                val_loss = val_loss / loss_lower_bound
+
+            epoch_loss = epoch_loss.detach().cpu()
+            val_loss = val_loss.detach().cpu()
 
             train_losses.append(epoch_loss)
             val_losses.append(val_loss)
@@ -169,12 +190,18 @@ def training_loop(
             loss_matrix.mean().backward()
             optimizer.step()
 
-            step_loss_cpu = loss_matrix.mean(dim=0).detach().cpu()
+            step_loss = loss_matrix.mean(dim=0)
+            val_loss = validate_epoch_all(model, dataloader, scheduler=None)
 
-            val_loss = validate_epoch_all(model, dataloader, scheduler=None).detach().cpu()
+            if normalize_by_lower_bound:
+                step_loss = step_loss / loss_lower_bound
+                val_loss = val_loss / loss_lower_bound
+
+            step_loss_cpu = step_loss.detach().cpu()
+            val_loss_cpu = val_loss.detach().cpu()
 
             train_losses.append(step_loss_cpu)
-            val_losses.append(val_loss)
+            val_losses.append(val_loss_cpu)
             steps.append(step_idx)
 
             progress.update(1)
@@ -182,15 +209,15 @@ def training_loop(
                 {
                     "step": step_idx,
                     "train_rmse": f"{_rmse_tensor(step_loss_cpu):.4f}",
-                    "val_rmse": f"{_rmse_tensor(val_loss):.4f}",
+                    "val_rmse": f"{_rmse_tensor(val_loss_cpu):.4f}",
                 }
             )
 
             if epoch_callback is not None:
-                epoch_callback(step_idx, step_loss_cpu, val_loss)
+                epoch_callback(step_idx, step_loss_cpu, val_loss_cpu)
 
             if scheduler and isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                scheduler.step(_rmse_tensor(val_loss))
+                scheduler.step(_rmse_tensor(val_loss_cpu))
             elif scheduler:
                 scheduler.step()
 

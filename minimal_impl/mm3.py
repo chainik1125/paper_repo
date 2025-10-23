@@ -493,6 +493,9 @@ def main(config_path: str = "mm3_config.yaml") -> None:
         if wandb_run is not None:
             wandb.log(log_dict, step=wb_step)
 
+    # Get normalize_by_lower_bound from config (default: False for backward compatibility)
+    normalize_by_lower_bound = bool(training_cfg.get("normalize_by_lower_bound", False))
+
     results = training_loop(
         model,
         optimizer,
@@ -503,6 +506,8 @@ def main(config_path: str = "mm3_config.yaml") -> None:
         batch_size=training_cfg.get("batch_size"),
         batches_per_epoch=batches_per_epoch,
         epoch_callback=step_callback,
+        normalize_by_lower_bound=normalize_by_lower_bound,
+        loss_lower_bound=dataset.loss_lower_bound if normalize_by_lower_bound else None,
     )
 
     final_train_rmse = _rmse(results.train_losses[-1])

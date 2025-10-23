@@ -11,6 +11,7 @@ training:
   batch_size: 64
   batches_per_epoch: 10
   weighted_loss: false
+  normalize_by_lower_bound: false  # Set to true to normalize losses by theoretical lower bound (like scripts/train.py)
   beta1: 0.9
   beta2: 0.999
   eps: 1.0e-8

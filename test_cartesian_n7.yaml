@@ -1,20 +1,20 @@
-experiment_dir: ./runs/bloch_manual
-run_id: bloch_run_manual
+experiment_dir: ./runs/mm3_bloch_product_n7_test
+run_id: mm3_bloch_product_n7_test
 global_config:
   device: cuda:0
   wandb: true
-  wandb_project: epsilon-bloch-walk
-  sweep_id: manual
+  wandb_project: epsilon-mm3-bloch
+  sweep_id: manual-cartesian
   process_dir: ./process_data
-  val_every: 100
+  val_every: 10
   scheduler: true
   save_every: 1000
 train_config:
   learning_rate: 1.0e-4
-  batch_size: 128
-  batches_per_epoch: 200
+  batch_size: 64
+  batches_per_epoch: 50
   bos: false
-  n_epochs: 2000
+  n_epochs: 20
   train_type: normal
 model_config:
   n_ctx: 7
@@ -29,6 +29,11 @@ model_config:
   d_model: 64
   d_mlp: 256
 process_config:
-  name: tom_quantum
-  alpha: 1.0
-  beta: 7.14142842854285
+  mode: mm3_bloch_product
+  name: mm3_bloch_product
+  mm3:
+    x: 0.15
+    a: 0.6
+  bloch:
+    alpha: 1.0
+    beta: 7.14142842854285

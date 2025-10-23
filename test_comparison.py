@@ -1,0 +1,27 @@
+"""Compare the two approaches side by side"""
+
+print("=== scripts/train.py approach ===")
+print("1. Model creation: HookedTransformerConfig(**config['model_config'])")
+print("2. Uses raw config dict with these fields:")
+print("   - n_ctx, d_model, d_head, n_heads, n_layers, d_mlp")
+print("   - act_fn, normalization_type, attn_only, seed, dtype, device")
+print("3. Optimizer: Adam (or SGD if train_type=='all')")
+print("4. Training: Uses train_epoch() which samples batches")
+print("5. Validation: validate_epoch_all() on every epoch")
+print("6. Logging: Custom StructuredLogger")
+print()
+
+print("=== minimal_impl/mm3.py approach ===")
+print("1. Model creation: create_hooked_transformer(dataset, TransformerParams)")
+print("2. Uses TransformerParams dataclass with inference from dataset")
+print("3. Optimizer: Always Adam")
+print("4. Training: training_loop() wrapper around train_epoch()")
+print("5. Validation: Same validate_epoch_all()")
+print("6. Logging: Optional wandb + belief regression")
+print()
+
+print("KEY DIFFERENCES:")
+print("A. scripts/train.py normalizes by loss_lower_bound during training")
+print("B. minimal_impl doesn't normalize during training, only for display")
+print("C. scripts/train.py has custom logger with checkpointing")
+print("D. minimal_impl has integrated belief regression analysis")
