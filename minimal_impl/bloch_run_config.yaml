@@ -1,0 +1,34 @@
+experiment_dir: ./runs/bloch_manual
+run_id: bloch_run_manual
+global_config:
+  device: cuda:0
+  wandb: true
+  wandb_project: epsilon-bloch-walk
+  sweep_id: manual
+  process_dir: ./process_data
+  val_every: 100
+  scheduler: true
+  save_every: 1000
+train_config:
+  learning_rate: 1.0e-4
+  batch_size: 128
+  batches_per_epoch: 200
+  bos: false
+  n_epochs: 200
+  train_type: normal
+model_config:
+  n_ctx: 7
+  act_fn: relu
+  normalization_type: LN
+  attn_only: false
+  seed: 42
+  dtype: float32
+  n_layers: 2
+  n_heads: 4
+  d_head: 16
+  d_model: 64
+  d_mlp: 256
+process_config:
+  name: tom_quantum
+  alpha: 1.0
+  beta: 7.14142842854285
