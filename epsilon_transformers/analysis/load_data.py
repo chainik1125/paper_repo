@@ -11,6 +11,7 @@ from epsilon_transformers.training.networks import create_RNN
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 from typing import Optional
 from io import BytesIO
+from shutil import copy2
 
 class S3ModelLoader:
     def __init__(self, use_company_credentials=False):
@@ -18,6 +19,13 @@ class S3ModelLoader:
         
         # Path prefix for all S3 operations
         self.path_prefix = ""
+        self.local_root = os.getenv("LOCAL_RUNS_ROOT")
+        if self.local_root:
+            self.local_root = Path(self.local_root).expanduser().resolve()
+            self.local_root.mkdir(parents=True, exist_ok=True)
+            self.bucket_name = None
+            self.s3_client = None
+            return
         
         if use_company_credentials:
             # Use the company-specific credentials
@@ -47,6 +55,9 @@ class S3ModelLoader:
 
     def list_sweeps(self):
         """List all sweep directories in the bucket"""
+        if self.local_root:
+            return sorted([p.name for p in self.local_root.iterdir() if p.is_dir()])
+
         paginator = self.s3_client.get_paginator('list_objects_v2')
         sweeps = set()
         
@@ -77,6 +88,12 @@ class S3ModelLoader:
         Raises:
             FileNotFoundError: If sweep_config.yaml doesn't exist for this sweep
         """
+        if self.local_root:
+            path = self.local_root / sweep_id / "sweep_config.yaml"
+            if not path.exists():
+                raise FileNotFoundError(f"No sweep_config.yaml found for sweep {sweep_id}")
+            return yaml.safe_load(path.read_text())
+
         key = f"{sweep_id}/sweep_config.yaml"
         key = self._get_full_key(key)
         try:
@@ -89,6 +106,12 @@ class S3ModelLoader:
 
     def list_sweep_files(self, sweep_id):
         """List all files (not directories) directly within a sweep directory"""
+        if self.local_root:
+            sweep_path = self.local_root / sweep_id
+            if not sweep_path.exists():
+                return []
+            return sorted([f"{sweep_id}/{p.name}" for p in sweep_path.iterdir() if p.is_file()])
+
         prefix = f"{sweep_id}/"
         prefix = self._get_full_key(prefix)
         paginator = self.s3_client.get_paginator('list_objects_v2')
@@ -108,6 +131,12 @@ class S3ModelLoader:
     
     def list_runs_in_sweep(self, sweep_id):
         """List all run directories within a sweep"""
+        if self.local_root:
+            sweep_path = self.local_root / sweep_id
+            if not sweep_path.exists():
+                return []
+            return sorted([p.name for p in sweep_path.iterdir() if p.is_dir()])
+
         prefix = f"{sweep_id}/"
         prefix = self._get_full_key(prefix)
         paginator = self.s3_client.get_paginator('list_objects_v2')
@@ -123,6 +152,16 @@ class S3ModelLoader:
 
     def list_checkpoints(self, sweep_id, run_id):
         """List all checkpoint files for a specific run within a sweep"""
+        if self.local_root:
+            run_path = self.local_root / sweep_id / run_id
+            if not run_path.exists():
+                return []
+            checkpoint_files = sorted(
+                [p for p in run_path.glob("*.pt")],
+                key=lambda x: int(''.join(filter(str.isdigit, x.stem)) or 0)
+            )
+            return [f"{sweep_id}/{run_id}/{p.name}" for p in checkpoint_files]
+
         prefix = f"{sweep_id}/{run_id}/"
         prefix = self._get_full_key(prefix)
         checkpoints = []
@@ -141,6 +180,16 @@ class S3ModelLoader:
     
     def list_config_files(self, sweep_id, run_id):
         """List all non-checkpoint files in a run directory"""
+        if self.local_root:
+            run_path = self.local_root / sweep_id / run_id
+            if not run_path.exists():
+                return []
+            return sorted([
+                f"{sweep_id}/{run_id}/{p.name}"
+                for p in run_path.iterdir()
+                if p.is_file() and p.suffix != '.pt'
+            ])
+
         prefix = f"{sweep_id}/{run_id}/"
         prefix = self._get_full_key(prefix)
         files = []
@@ -166,6 +215,16 @@ class S3ModelLoader:
         Returns:
             Optional[pd.DataFrame]: DataFrame containing loss data, or None if not found
         """
+        if self.local_root:
+            loss_path = self.local_root / sweep_id / run_id / "loss.csv"
+            if not loss_path.exists():
+                return None
+            try:
+                return pd.read_csv(loss_path)
+            except Exception as e:
+                print(f"Error loading loss data: {e}")
+                return None
+
         try:
             configs = self.load_run_configs(sweep_id, run_id)
             return configs['loss_csv']
@@ -196,14 +255,17 @@ class S3ModelLoader:
             raise FileNotFoundError(f"No checkpoints found for run {run_id}")
                 
         # Download checkpoint file
-        checkpoint_path = temp_dir / "model.pt"
-        # Apply path prefix before downloading
-        full_checkpoint_key = self._get_full_key(checkpoint_key)
-        self.s3_client.download_file(
-            self.bucket_name,
-            full_checkpoint_key,
-            str(checkpoint_path)
-        )
+        if self.local_root:
+            checkpoint_path = (self.local_root / checkpoint_key).resolve()
+        else:
+            checkpoint_path = temp_dir / "model.pt"
+            # Apply path prefix before downloading
+            full_checkpoint_key = self._get_full_key(checkpoint_key)
+            self.s3_client.download_file(
+                self.bucket_name,
+                full_checkpoint_key,
+                str(checkpoint_path)
+            )
         
         # Load configurations
         configs = self.load_run_configs(sweep_id, run_id)
@@ -229,26 +291,36 @@ class S3ModelLoader:
         temp_dir.mkdir(parents=True, exist_ok=True)
 
         # Download checkpoint file
-        checkpoint_path = temp_dir / "model.pt"
-        full_checkpoint_key = self._get_full_key(checkpoint_key)
-        self.s3_client.download_file(
-            self.bucket_name,
-            full_checkpoint_key,
-            str(checkpoint_path)
-        )
+        if self.local_root:
+            checkpoint_path = (self.local_root / checkpoint_key).resolve()
+        else:
+            checkpoint_path = temp_dir / "model.pt"
+            full_checkpoint_key = self._get_full_key(checkpoint_key)
+            self.s3_client.download_file(
+                self.bucket_name,
+                full_checkpoint_key,
+                str(checkpoint_path)
+            )
 
         # Download and load run config
-        config_key = f"{sweep_id}/{run_id}/run_config.yaml"
-        full_config_key = self._get_full_key(config_key)
-        config_path = temp_dir / "run_config.yaml"
-        self.s3_client.download_file(
-            self.bucket_name,
-            full_config_key,
-            str(config_path)
-        )
+        if self.local_root:
+            config_path = (self.local_root / sweep_id / run_id / "run_config.yaml").resolve()
+            if not config_path.exists():
+                raise FileNotFoundError(f"run_config.yaml not found for {sweep_id}/{run_id}")
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+        else:
+            config_key = f"{sweep_id}/{run_id}/run_config.yaml"
+            full_config_key = self._get_full_key(config_key)
+            config_path = temp_dir / "run_config.yaml"
+            self.s3_client.download_file(
+                self.bucket_name,
+                full_config_key,
+                str(config_path)
+            )
 
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
             
         # Infer vocab size from the output layer in the state dict
         state_dict = torch.load(checkpoint_path, map_location=device, weights_only=True)
@@ -268,6 +340,8 @@ class S3ModelLoader:
     
     def check_if_process_data_exists(self,process_folder_name):
         """Check if a process data folder exists in S3"""
+        if self.local_root:
+            return (self.local_root / "analysis" / process_folder_name).exists()
         key = f"analysis/{process_folder_name}/"
         key = self._get_full_key(key)
         response = self.s3_client.list_objects_v2(Bucket=self.bucket_name, Prefix=key)
@@ -287,7 +361,12 @@ class S3ModelLoader:
         configs = {}
         
         # Helper function to download and read file content
-        def read_s3_file(key):
+        def read_file(key):
+            if self.local_root:
+                path = (self.local_root / key).resolve()
+                if not path.exists():
+                    raise FileNotFoundError(f"Missing file at {path}")
+                return path.read_text()
             full_key = self._get_full_key(key)
             response = self.s3_client.get_object(Bucket=self.bucket_name, Key=full_key)
             return response['Body'].read().decode('utf-8')
@@ -296,7 +375,7 @@ class S3ModelLoader:
         
         # Load run_config.yaml
         try:
-            yaml_content = read_s3_file(f"{base_path}/run_config.yaml")
+            yaml_content = read_file(f"{base_path}/run_config.yaml")
             configs['run_config'] = yaml.safe_load(yaml_content)
         except Exception as e:
             print(f"Error loading run_config.yaml: {e}")
@@ -305,10 +384,10 @@ class S3ModelLoader:
         # Try loading hooked_model_config.json first, then model_config.json as fallback
         try:
             try:
-                json_content = read_s3_file(f"{base_path}/hooked_model_config.json")
+                json_content = read_file(f"{base_path}/hooked_model_config.json")
                 configs['model_config'] = json.loads(json_content)
             except:
-                json_content = read_s3_file(f"{base_path}/model_config.json")
+                json_content = read_file(f"{base_path}/model_config.json")
                 configs['model_config'] = json.loads(json_content)
         except Exception as e:
             print(f"Error loading model config files: {e}")
@@ -316,7 +395,7 @@ class S3ModelLoader:
 
         # Load log.json
         try:
-            json_content = read_s3_file(f"{base_path}/log.json")
+            json_content = read_file(f"{base_path}/log.json")
             configs['log'] = json.loads(json_content)
         except Exception as e:
             print(f"Error loading log.json: {e}")
@@ -324,14 +403,14 @@ class S3ModelLoader:
 
         # Load CSV files as pandas DataFrames
         try:
-            csv_content = read_s3_file(f"{base_path}/log.csv")
+            csv_content = read_file(f"{base_path}/log.csv")
             configs['log_csv'] = pd.read_csv(StringIO(csv_content))
         except Exception as e:
             print(f"Error loading log.csv: {e}")
             configs['log_csv'] = None
 
         try:
-            csv_content = read_s3_file(f"{base_path}/loss.csv")
+            csv_content = read_file(f"{base_path}/loss.csv")
             configs['loss_csv'] = pd.read_csv(StringIO(csv_content))
         except Exception as e:
             print(f"Error loading loss.csv: {e}")
@@ -348,6 +427,13 @@ class S3ModelLoader:
             run_id (str): ID of the run
             df (pd.DataFrame): DataFrame containing MSE data
         """
+        if self.local_root:
+            output_dir = self.local_root / "analysis" / sweep_id / run_id
+            output_dir.mkdir(parents=True, exist_ok=True)
+            df.to_csv(output_dir / "mse_data.csv", index=False)
+            print(f"Successfully saved MSE data to {output_dir / 'mse_data.csv'}")
+            return
+
         # Convert DataFrame to CSV string in memory
         csv_buffer = StringIO()
         df.to_csv(csv_buffer, index=False)
@@ -395,7 +481,7 @@ class S3ModelLoader:
             df = pd.read_csv(BytesIO(response['Body'].read()))
             print(f"Successfully loaded MSE data from s3://{self.bucket_name}/{full_key}")
             return df
-        
+            
         except self.s3_client.exceptions.NoSuchKey:
             raise FileNotFoundError(f"No MSE data found for sweep {sweep_id}, run {run_id}")
         except Exception as e:
@@ -412,6 +498,9 @@ class S3ModelLoader:
         Returns:
             bool: True if MSE data exists, False otherwise
         """
+        if self.local_root:
+            return (self.local_root / "analysis" / sweep_id / run_id / "mse_data.csv").exists()
+
         key = f"analysis/{sweep_id}/{run_id}/mse_data.csv"
         full_key = self._get_full_key(key)
         try:

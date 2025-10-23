@@ -79,7 +79,19 @@ class StructuredLogger:
             writer.writerow(row)
     
     def save_model_checkpoint(self, model: nn.Module, name: str):
-        torch.save(model.state_dict(), os.path.join(self.base_dir, f'{name}.pt'))
+        checkpoint_path = os.path.join(self.base_dir, f"{name}.pt")
+        torch.save(model.state_dict(), checkpoint_path)
+
+        # If there's an active WandB run, log the checkpoint as an artifact
+        if wandb.run is not None:
+            try:
+                artifact_name = f"{wandb.run.id}-model-{name}"
+                artifact = wandb.Artifact(artifact_name, type="model")
+                artifact.add_file(checkpoint_path)
+                # Use aliases so the latest checkpoint is easy to fetch
+                wandb.log_artifact(artifact, aliases=["latest", name])
+            except Exception as exc:  # pragma: no cover - best-effort logging
+                wandb.termwarn(f"Failed to log checkpoint artifact '{artifact_name}': {exc}")
 
     def close(self):
         self.csv_file.close()

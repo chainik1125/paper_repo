@@ -1,0 +1,45 @@
+# runs:
+#   - name: bloch_manual          # how you want the results folder to be named
+#     run_config_path: minimal_impl/bloch_run_config.yaml
+#     wandb:
+#       entity: dmitry2-uiuc
+#       project: epsilon-bloch-walk_manual
+#       run_path: dmitry2-uiuc/epsilon-bloch-walk_manual/b9y0lvw8
+#       checkpoints_artifact: dmitry2-uiuc/epsilon-bloch-walk_manual/b9y0lvw8-model-179200:latest
+#     n_ctx: 7
+#     bos: false
+#     process:
+#       name: tom_quantum
+#       alpha: 1.0
+#       beta: 7.14142842854285
+#     only_initial_and_final: false   # <– keep this false to process every checkpoint
+
+# output_dir: regression_results
+# device: cuda:0
+# regression_device: cuda
+# n_splits: 10
+# random_state: 42
+
+runs:
+  - name: bloch_manual
+    run_config_path: minimal_impl/bloch_run_config.yaml
+    wandb:
+      entity: dmitry2-uiuc
+      project: epsilon-bloch-walk_manual
+      run_path: dmitry2-uiuc/epsilon-bloch-walk_manual/b9y0lvw8
+      checkpoints_artifact: dmitry2-uiuc/epsilon-bloch-walk_manual/b9y0lvw8-model-179200:latest
+    checkpoints_dir: artifacts/b9y0lvw8-model-179200:v0
+    n_ctx: 7
+    bos: false
+    process:
+      name: tom_quantum
+      alpha: 1.0
+      beta: 7.14142842854285
+    only_initial_and_final: false
+    single_layer: blocks.0.hook_resid_pre
+
+output_dir: regression_results
+device: cuda:0
+regression_device: cuda
+n_splits: 10
+random_state: 42

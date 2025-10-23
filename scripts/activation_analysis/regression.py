@@ -122,8 +122,8 @@ class RegressionAnalyzer:
             
             # Calculate R-squared
             total_var = torch.sum((Y_weighted - Y_weighted.mean(dim=0))**2)
-            explained_var = torch.sum((Y_pred * sqrt_weights - Y_weighted.mean(dim=0))**2)
-            r_squared = (explained_var / total_var).item()
+            residual_var = torch.sum((Y_pred * sqrt_weights - Y_weighted)**2)
+            r_squared = (1.0 - (residual_var / total_var)).item() if total_var > 0 else 0
             
             dims = X.shape[1]
             return mean_dist.item(), dims, var_expl_str, singular_values, beta.cpu().numpy(), r_squared
@@ -1221,8 +1221,8 @@ def run_paul_rcond_sweep_with_sklearn_predictions_flat(regression_analyzer, acti
         
         # Calculate R-squared for old method
         total_var_old = torch.sum((Y_weighted - Y_weighted.mean(dim=0))**2)
-        explained_var_old = torch.sum((Y_pred_old * sqrt_weights - Y_weighted.mean(dim=0))**2)
-        r_squared_old = (explained_var_old / total_var_old).item()
+        residual_var_old = torch.sum((Y_pred_old * sqrt_weights - Y_weighted)**2)
+        r_squared_old = (1.0 - (residual_var_old / total_var_old)).item() if total_var_old > 0 else 0
         
         # --- New Method ---
         pinv_A_new = pinvs_dict_new[rcond]  # pseudoinverse computed on X_weighted directly
@@ -1957,10 +1957,10 @@ def _train_final_model(activations, beliefs, probs, best_rcond, sklearn_fallback
         # 2. Calculate R^2 (weighted) using normalized probs (consistent with typical R^2 definition)
         sqrt_weights_norm = torch.sqrt(probs_norm).unsqueeze(1)
         Y_weighted_mean = (Y * sqrt_weights_norm).sum(dim=0) / sqrt_weights_norm.sum()
-        
+
         total_var = torch.sum(((Y * sqrt_weights_norm) - Y_weighted_mean)**2)
-        explained_var = torch.sum(((Y_pred * sqrt_weights_norm) - Y_weighted_mean)**2)
-        r_squared = (explained_var / total_var).item() if total_var > 0 else 0
+        residual_var = torch.sum(((Y_pred - Y) * sqrt_weights_norm)**2)
+        r_squared = (1.0 - (residual_var / total_var)).item() if total_var > 0 else 0
 
         # 3. Calculate MSE, MAE, RMSE (weighted per belief dimension) using original probs
         squared_errors = (Y_pred - Y)**2

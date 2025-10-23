@@ -18,29 +18,7 @@ RANDOM_STATE = 42
 ONLY_INITIAL_AND_FINAL = True  # Process only first and last checkpoints
 
 sweep_run_pairs = [
-    # Bloch Walk Process (AKA Tom Quantum A)
-    ("20241121152808", 49),  # LSTM
-    ("20241205175736", 17),  # Transformer
-    ("20241121152808", 57),  # GRU
-    ("20241121152808", 65),  # RNN
-    
-    # Moon Process (AKA Post Quantum)
-    ("20241121152808", 48),  # LSTM
-    ("20250421221507", 0),  # Transformer
-    ("20241121152808", 56),  # GRU
-    ("20241121152808", 64),  # RNN
-
-    # Mess3
-    ("20241121152808", 55),  # LSTM
-    ("20241205175736", 23),  # Transformer
-    ("20241121152808", 63),  # GRU
-    ("20241121152808", 71),  # RNN
-    
-    # FRDN (AKA Fanizza) - All missing
-    ("20241121152808", 53),  # LSTM
-    ("20250422023003", 1),  # Transformer
-    ("20241121152808", 61),  # GRU
-    ("20241121152808", 69),  # RNN
+    ("manual_sweep", 0),
 ]
 
 # %%
@@ -591,5 +569,4 @@ for sweep, run_id_int in sweep_run_pairs:
         # Save each checkpoint's data to a separate file
         joblib.dump(save_data, f'{run_dir}/checkpoint_{ckpt_ind}.joblib')
         joblib.dump(classical_save_data, f'{run_dir}/markov3_checkpoint_{ckpt_ind}.joblib')
-
 

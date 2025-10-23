@@ -1,7 +1,7 @@
 experiment_dir: ./runs/bloch_manual
 run_id: bloch_run_manual
 global_config:
-  device: cuda:0
+  device: cpu
   wandb: true
   wandb_project: epsilon-bloch-walk
   sweep_id: manual
@@ -29,10 +29,6 @@ model_config:
   d_model: 64
   d_mlp: 256
 process_config:
-  mode: bloch
   name: tom_quantum
   alpha: 1.0
   beta: 7.14142842854285
-  bloch:
-    alpha: 1.0
-    beta: 7.14142842854285
