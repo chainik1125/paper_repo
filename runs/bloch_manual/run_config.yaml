@@ -14,7 +14,7 @@ train_config:
   batch_size: 128
   batches_per_epoch: 200
   bos: false
-  n_epochs: 1000
+  n_epochs: 2000
   train_type: normal
 model_config:
   n_ctx: 7
