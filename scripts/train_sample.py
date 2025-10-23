@@ -233,6 +233,10 @@ def main():
         device = f'cuda:{args.gpu_id}'
     else:
         device = config['global_config']['device']
+
+    if isinstance(device, str) and device.startswith('cuda') and not torch.cuda.is_available():
+        print(f"CUDA device '{device}' requested but CUDA is not available. Falling back to CPU.")
+        device = 'cpu'
     #print(f"Using device: {device}")
 
     val_every = config['global_config']['val_every']
