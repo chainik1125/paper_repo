@@ -14,10 +14,10 @@ train_config:
   batch_size: 128
   batches_per_epoch: 200
   bos: false
-  n_epochs: 500
+  n_epochs: 2000
   train_type: normal
 model_config:
-  n_ctx: 4
+  n_ctx: 7
   act_fn: relu
   normalization_type: LN
   attn_only: false

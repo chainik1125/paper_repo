@@ -206,35 +206,49 @@ def generate_bloch_data(config: dict, device: str = 'cpu'):
     import time
     start = time.time()
 
-    # Transform minimal_impl config format to standard format
+    # Get bloch parameters from config
     process_config = config.get('process_config', {})
 
-    # Check if config is in minimal_impl format
-    if 'mode' in process_config:
-        mode = process_config['mode']
-        # Get parameters for this mode
-        mode_params = process_config.get(mode, {})
-        # Create standard format with proper process name
-        # Map common bloch aliases to tom_quantum
-        if mode in ['bloch', 'bloch_walk', 'tomqa', 'tomqb']:
-            std_process_config = {'name': 'tom_quantum'}
-        else:
-            std_process_config = {'name': mode}
-        std_process_config.update(mode_params)
-
-        # Create modified config
-        std_config = config.copy()
-        std_config['process_config'] = std_process_config
+    # Extract bloch params - handle both standard and cartesian formats
+    if 'bloch' in process_config:
+        print("Detected cartesian product model - extracting bloch component")
+        bloch_params = process_config['bloch']
     else:
-        # Assume config already in standard format
-        std_config = config
-        # Make sure it's set to tom_quantum if not already specified
-        if 'name' not in std_config['process_config']:
-            std_config['process_config']['name'] = 'tom_quantum'
+        bloch_params = {
+            'alpha': process_config.get('alpha', 1.0),
+            'beta': process_config.get('beta', 7.14142842854285),
+        }
 
-    print(f"  Calling prepare_msp_data (alpha={std_config['process_config'].get('alpha')}, beta={std_config['process_config'].get('beta')}, n_ctx={std_config['model_config']['n_ctx']})...")
-    nn_inputs, beliefs, indices, probs, _ = prepare_msp_data(std_config, std_config['model_config'])
+    # Create config for bloch data generation
+    bloch_config = {
+        'process_config': {
+            'name': 'tom_quantum',
+            **bloch_params
+        },
+        'model_config': {
+            **config['model_config'],
+            'd_vocab': 4  # Always use 4 for bloch data generation
+        },
+        'train_config': config['train_config'],
+    }
+
+    # Store original d_vocab
+    original_d_vocab = config['model_config'].get('d_vocab')
+
+    print(f"  Calling prepare_msp_data (alpha={bloch_params.get('alpha')}, beta={bloch_params.get('beta')}, n_ctx={bloch_config['model_config']['n_ctx']})...")
+    nn_inputs, beliefs, indices, probs, _ = prepare_msp_data(bloch_config, bloch_config['model_config'])
     print(f"  prepare_msp_data took {time.time() - start:.1f}s")
+
+    # If this is a cartesian product model, remap tokens
+    if original_d_vocab and original_d_vocab > 4:
+        print(f"Remapping bloch tokens for cartesian encoding (model d_vocab={original_d_vocab})...")
+        # Cartesian encoding: mm3_token * vocab_bloch + bloch_token
+        # We pair with mm3_token=0 to isolate bloch
+        vocab_bloch = original_d_vocab // 3  # Should be 4 for mm3×bloch
+        # nn_inputs already contains bloch tokens (0-3), and we pair with mm3=0
+        # So the combined tokens are just: 0 * vocab_bloch + bloch_token = bloch_token
+        print(f"  Using mm3 context = 0 (vocab_bloch={vocab_bloch})")
+        # No remapping needed since 0 * vocab_bloch + bloch = bloch
 
     nn_inputs = nn_inputs.to(device)
     beliefs = beliefs.to(device)

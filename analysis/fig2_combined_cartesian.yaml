@@ -1,0 +1,9 @@
+runs:
+  - name: cartesian_bloch_mm3
+    artifact: dmitry2-uiuc/epsilon-mm3-bloch_manual-cartesian/mlbspg71-model-179379200:v0
+    samples: 50000
+    n_splits: 0
+    device: cpu
+    output_json: figs/mm3_bloch_tensor_metrics.json
+    kronecker_rank: 5
+    ridge_alpha: 1e-6
