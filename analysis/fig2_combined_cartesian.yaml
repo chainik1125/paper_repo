@@ -6,4 +6,5 @@ runs:
     device: cpu
     output_json: figs/mm3_bloch_tensor_metrics.json
     kronecker_rank: 5
+    operator_rank: 5
     ridge_alpha: 1e-6

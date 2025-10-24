@@ -37,6 +37,7 @@ from minimal_impl.bloch import generate_bloch_transformer_data
 from minimal_impl.regression import deduplicate_data, deduplicate_tensor, _combine_layer_activations
 from scripts.activation_analysis.config import TRANSFORMER_ACTIVATION_KEYS
 from scripts.activation_analysis.data_loading import ActivationExtractor
+import matplotlib.pyplot as plt
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 
 try:  # WandB is optional for offline debugging
@@ -248,6 +249,7 @@ def main():
     parser.add_argument("--n-splits", type=int, default=5, help="CV folds for the component regressions")
     parser.add_argument("--device", type=str, default="cpu", help="torch device")
     parser.add_argument("--kronecker-rank", type=int, default=5, help="Rank for low-rank Kronecker correction (0 disables)")
+    parser.add_argument("--operator-rank", type=int, default=5, help="Rank for operator Schmidt approximation (0 disables)")
     parser.add_argument("--ridge-alpha", type=float, default=None, help="Override ridge regularisation strength (disables CV)")
     args = parser.parse_args()
 
@@ -270,6 +272,7 @@ def main():
             "n_splits": args.n_splits,
             "device": args.device,
             "kronecker_rank": args.kronecker_rank,
+            "operator_rank": args.operator_rank,
             "ridge_alpha": args.ridge_alpha,
         }]
 
@@ -281,6 +284,7 @@ def main():
         output_path = entry.get("output_json")
         output_json = Path(output_path) if output_path else None
         rank = int(entry.get("kronecker_rank", args.kronecker_rank))
+        operator_rank = int(entry.get("operator_rank", args.operator_rank))
         ridge_alpha = entry.get("ridge_alpha", args.ridge_alpha)
         ridge_alpha = float(ridge_alpha) if ridge_alpha is not None else None
 
@@ -292,6 +296,7 @@ def main():
             device=device,
             output_json=output_json,
             kronecker_rank=rank,
+            operator_rank=operator_rank,
             ridge_alpha=ridge_alpha,
         )
         print(json.dumps(results, indent=2))
@@ -304,6 +309,7 @@ def run_single_analysis(
     device: str,
     output_json: Path | None = None,
     kronecker_rank: int = 5,
+    operator_rank: int = 5,
     ridge_alpha: float | None = None,
 ) -> dict:
     with tempfile.TemporaryDirectory(prefix="fig2_combined_") as tmpdir:
@@ -428,6 +434,7 @@ def run_single_analysis(
         joint_pred_fact = np.einsum("bi,bj->bij", mm3_pred, bloch_pred).reshape(num_samples, -1)
 
         fact_metrics = weighted_metrics(joint_true, joint_pred_fact, sample_weights)
+        coef_z_singular_values: list[float] = []
 
         # Augmented regression on outer-product features (with optional low-rank truncation)
         mm3_dim = mm3_pred.shape[1]
@@ -457,12 +464,17 @@ def run_single_analysis(
         )
         augmented_metrics = weighted_metrics(joint_true, joint_pred_aug_full, sample_weights)
 
-        if kronecker_rank and 0 < kronecker_rank < min(coef_z.shape):
+        coef_z_singular_values: list[float] = []
+        if kronecker_rank and kronecker_rank > 0:
             U, S, Vt = np.linalg.svd(coef_z, full_matrices=False)
-            U_k = U[:, :kronecker_rank]
-            S_k = S[:kronecker_rank]
-            Vt_k = Vt[:kronecker_rank, :]
-            coef_z_trunc = (U_k * S_k) @ Vt_k
+            coef_z_singular_values = S.tolist()
+            if 0 < kronecker_rank < len(S):
+                U_k = U[:, :kronecker_rank]
+                S_k = S[:kronecker_rank]
+                Vt_k = Vt[:kronecker_rank, :]
+                coef_z_trunc = (U_k * S_k) @ Vt_k
+            else:
+                coef_z_trunc = coef_z
         else:
             coef_z_trunc = coef_z
 
@@ -473,6 +485,31 @@ def run_single_analysis(
             + coef_bias
         )
         augmented_lr_metrics = weighted_metrics(joint_true, joint_pred_aug_lr, sample_weights)
+
+        operator_metrics = {}
+        operator_singular_values = []
+        if operator_rank and operator_rank > 0:
+            mm3_dim = mm3_pred.shape[1]
+            bloch_dim = bloch_pred.shape[1]
+            joint_dim = joint_true.shape[1]
+            if joint_dim != mm3_dim * bloch_dim:
+                raise ValueError("Joint belief dimension does not match mm3*bloch product")
+
+            W_tensor = coef_z.reshape(mm3_dim, bloch_dim, mm3_dim, bloch_dim)
+            W_AB = np.transpose(W_tensor, (0, 2, 1, 3)).reshape(mm3_dim * mm3_dim, bloch_dim * bloch_dim)
+            U_op, S_op, Vt_op = np.linalg.svd(W_AB, full_matrices=False)
+            operator_singular_values = S_op.tolist()
+            k_op = min(operator_rank, len(S_op))
+            Wk_AB = (U_op[:, :k_op] * S_op[:k_op]) @ Vt_op[:k_op, :]
+            Wk_tensor = np.transpose(Wk_AB.reshape(mm3_dim, mm3_dim, bloch_dim, bloch_dim), (0, 2, 1, 3))
+            Wk = Wk_tensor.reshape(joint_dim, mm3_dim * bloch_dim)
+            joint_pred_op = (
+                Z @ Wk.T
+                + mm3_pred @ coef_mm3.T
+                + bloch_pred @ coef_bloch.T
+                + coef_bias
+            )
+            operator_metrics = weighted_metrics(joint_true, joint_pred_op, sample_weights)
 
         # Direct joint regression baseline
         alpha_joint = ridge_alpha if ridge_alpha is not None else 1e-10
@@ -488,11 +525,38 @@ def run_single_analysis(
             "factorised_joint_metrics": fact_metrics,
             "augmented_metrics": augmented_metrics,
             "augmented_low_rank_metrics": augmented_lr_metrics,
+            "operator_schmidt_metrics": operator_metrics,
+            "operator_singular_values": operator_singular_values,
+            "kronecker_singular_values": coef_z_singular_values,
             "direct_joint_metrics": direct_metrics,
             "num_samples": num_samples,
             "kronecker_rank": kronecker_rank,
+            "operator_rank": operator_rank,
             "ridge_alpha": ridge_alpha,
         }
+
+        # Save singular value diagnostics
+        plot_dir = output_json.parent if output_json else Path("figs")
+        plot_dir.mkdir(parents=True, exist_ok=True)
+        safe_prefix = artifact_path.replace('/', '_').replace(':', '_')
+        if coef_z_singular_values:
+            plt.figure()
+            plt.plot(np.arange(1, len(coef_z_singular_values) + 1), coef_z_singular_values, marker='o')
+            plt.xlabel("Component index")
+            plt.ylabel("Singular value")
+            plt.title("Kronecker Singular Values")
+            plt.grid(True, alpha=0.3)
+            plt.savefig(plot_dir / f"{safe_prefix}_kronecker_singular_values.png", dpi=200, bbox_inches="tight")
+            plt.close()
+        if operator_singular_values:
+            plt.figure()
+            plt.plot(np.arange(1, len(operator_singular_values) + 1), operator_singular_values, marker='o', color='orange')
+            plt.xlabel("Component index")
+            plt.ylabel("Singular value")
+            plt.title("Operator Schmidt Singular Values")
+            plt.grid(True, alpha=0.3)
+            plt.savefig(plot_dir / f"{safe_prefix}_operator_singular_values.png", dpi=200, bbox_inches="tight")
+            plt.close()
 
         if output_json:
             output_json.parent.mkdir(parents=True, exist_ok=True)
