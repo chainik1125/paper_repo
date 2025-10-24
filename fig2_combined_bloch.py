@@ -251,6 +251,7 @@ def main():
     parser.add_argument("--kronecker-rank", type=int, default=5, help="Rank for low-rank Kronecker correction (0 disables)")
     parser.add_argument("--operator-rank", type=int, default=5, help="Rank for operator Schmidt approximation (0 disables)")
     parser.add_argument("--ridge-alpha", type=float, default=None, help="Override ridge regularisation strength (disables CV)")
+    parser.add_argument("--random-baseline", action="store_true", help="Evaluate a random initialised model as baseline")
     args = parser.parse_args()
 
     analyses: List[dict]
@@ -274,6 +275,7 @@ def main():
             "kronecker_rank": args.kronecker_rank,
             "operator_rank": args.operator_rank,
             "ridge_alpha": args.ridge_alpha,
+            "random_baseline": args.random_baseline,
         }]
 
     for entry in analyses:
@@ -287,6 +289,7 @@ def main():
         operator_rank = int(entry.get("operator_rank", args.operator_rank))
         ridge_alpha = entry.get("ridge_alpha", args.ridge_alpha)
         ridge_alpha = float(ridge_alpha) if ridge_alpha is not None else None
+        random_flag = bool(entry.get("random_baseline", args.random_baseline))
 
         print(f"=== Analysing artifact: {artifact_path} ===")
         results = run_single_analysis(
@@ -298,6 +301,7 @@ def main():
             kronecker_rank=rank,
             operator_rank=operator_rank,
             ridge_alpha=ridge_alpha,
+            random_baseline=random_flag,
         )
         print(json.dumps(results, indent=2))
 
@@ -311,6 +315,7 @@ def run_single_analysis(
     kronecker_rank: int = 5,
     operator_rank: int = 5,
     ridge_alpha: float | None = None,
+    random_baseline: bool = False,
 ) -> dict:
     with tempfile.TemporaryDirectory(prefix="fig2_combined_") as tmpdir:
         workdir = Path(tmpdir)
@@ -518,6 +523,127 @@ def run_single_analysis(
         joint_pred_direct = ridge_joint.predict(joint_resid.cpu().numpy())
         direct_metrics = weighted_metrics(joint_true, joint_pred_direct, sample_weights)
 
+        random_baseline_metrics = None
+        if random_baseline:
+            cfg_copy = run_cfg.get('model_config', {}).copy()
+            cfg_copy.setdefault('act_fn', run_cfg.get('model_config', {}).get('act_fn', 'relu'))
+            cfg_copy.setdefault('normalization_type', run_cfg.get('model_config', {}).get('normalization_type', 'LN'))
+            cfg_copy.setdefault('n_layers', run_cfg['model_config']['n_layers'])
+            cfg_copy.setdefault('n_heads', run_cfg['model_config']['n_heads'])
+            cfg_copy.setdefault('d_model', run_cfg['model_config']['d_model'])
+            cfg_copy.setdefault('d_mlp', run_cfg['model_config']['d_mlp'])
+            cfg_copy.setdefault('n_ctx', run_cfg['model_config']['n_ctx'])
+            max_token = int(combined_samples.max().item()) + 1
+            cfg_copy['d_vocab'] = max_token
+            cfg_copy['dtype'] = torch.float32
+            cfg_copy['device'] = device
+            random_model = HookedTransformer(HookedTransformerConfig(**cfg_copy))
+            random_model.eval()
+
+            with torch.no_grad():
+                cache_mm3_rand = extractor.extract_activations(
+                    random_model,
+                    combined_mm3_inputs.long(),
+                    'transformer',
+                    relevant_activation_keys=TRANSFORMER_ACTIVATION_KEYS,
+                )
+            activations_mm3_rand = {layer: acts.detach() for layer, acts in cache_mm3_rand.items()}
+            activations_mm3_rand['combined'] = _combine_layer_activations(activations_mm3_rand)
+            combined_mm3_rand = activations_mm3_rand['combined'].to(device_t)
+            dedup_acts_mm3_rand, _ = deduplicate_tensor(mm3_data.prefix_map, combined_mm3_rand)
+            mm3_model_rand, mm3_metrics_rand = fit_weighted_ridge(
+                dedup_acts_mm3_rand,
+                mm3_data.dedup_beliefs,
+                mm3_data.dedup_probs,
+                n_splits=0,
+                alpha_override=ridge_alpha,
+            )
+
+            with torch.no_grad():
+                cache_bloch_rand = extractor.extract_activations(
+                    random_model,
+                    combined_bloch_inputs.long(),
+                    'transformer',
+                    relevant_activation_keys=TRANSFORMER_ACTIVATION_KEYS,
+                )
+            activations_bloch_rand = {layer: acts.detach() for layer, acts in cache_bloch_rand.items()}
+            activations_bloch_rand['combined'] = _combine_layer_activations(activations_bloch_rand)
+            combined_bloch_rand = activations_bloch_rand['combined'].to(device_t)
+            dedup_acts_bloch_rand, _ = deduplicate_tensor(bloch_data.prefix_map, combined_bloch_rand)
+            bloch_model_rand, bloch_metrics_rand = fit_weighted_ridge(
+                dedup_acts_bloch_rand,
+                bloch_data.dedup_beliefs,
+                bloch_data.dedup_probs,
+                n_splits=0,
+                alpha_override=ridge_alpha,
+            )
+
+            with torch.no_grad():
+                cache_joint_rand = extractor.extract_activations(
+                    random_model,
+                    combined_samples.long(),
+                    'transformer',
+                    relevant_activation_keys=TRANSFORMER_ACTIVATION_KEYS,
+                )
+            activations_joint_rand = {layer: acts.detach() for layer, acts in cache_joint_rand.items()}
+            activations_joint_rand['combined'] = _combine_layer_activations(activations_joint_rand)
+            joint_resid_rand_full = activations_joint_rand['combined'].to(device_t)
+            joint_resid_rand = joint_resid_rand_full[:, -1, :]
+
+            mm3_pred_rand = predict_with_regressor(mm3_model_rand, joint_resid_rand)
+            bloch_pred_rand = predict_with_regressor(bloch_model_rand, joint_resid_rand)
+
+            joint_pred_fact_rand = np.einsum("bi,bj->bij", mm3_pred_rand, bloch_pred_rand).reshape(samples, -1)
+            fact_rand_metrics = weighted_metrics(joint_true, joint_pred_fact_rand, sample_weights)
+
+            Z_rand = np.einsum("bi,bj->bij", mm3_pred_rand, bloch_pred_rand).reshape(samples, mm3_dim * bloch_dim)
+            F_rand = np.concatenate([Z_rand, mm3_pred_rand, bloch_pred_rand, ones_col], axis=1)
+
+            joint_pred_aug_rand = (
+                Z_rand @ coef_z.T
+                + mm3_pred_rand @ coef_mm3.T
+                + bloch_pred_rand @ coef_bloch.T
+                + coef_bias
+            )
+            aug_rand_metrics = weighted_metrics(joint_true, joint_pred_aug_rand, sample_weights)
+
+            if kronecker_rank and kronecker_rank > 0:
+                joint_pred_aug_lr_rand = (
+                    Z_rand @ coef_z_trunc.T
+                    + mm3_pred_rand @ coef_mm3.T
+                    + bloch_pred_rand @ coef_bloch.T
+                    + coef_bias
+                )
+                aug_lr_rand_metrics = weighted_metrics(joint_true, joint_pred_aug_lr_rand, sample_weights)
+            else:
+                aug_lr_rand_metrics = {}
+
+            if operator_rank and operator_rank > 0:
+                joint_pred_op_rand = (
+                    Z_rand @ Wk.T
+                    + mm3_pred_rand @ coef_mm3.T
+                    + bloch_pred_rand @ coef_bloch.T
+                    + coef_bias
+                )
+                operator_rand_metrics = weighted_metrics(joint_true, joint_pred_op_rand, sample_weights)
+            else:
+                operator_rand_metrics = {}
+
+            ridge_rand = Ridge(alpha=alpha_joint, fit_intercept=True)
+            ridge_rand.fit(joint_resid_rand.cpu().numpy(), joint_true, sample_weight=sample_weights)
+            joint_pred_rand = ridge_rand.predict(joint_resid_rand.cpu().numpy())
+            direct_rand_metrics = weighted_metrics(joint_true, joint_pred_rand, sample_weights)
+
+            random_baseline_metrics = {
+                "mm3_metrics": mm3_metrics_rand,
+                "bloch_metrics": bloch_metrics_rand,
+                "factorised_joint_metrics": fact_rand_metrics,
+                "augmented_metrics": aug_rand_metrics,
+                "augmented_low_rank_metrics": aug_lr_rand_metrics,
+                "operator_schmidt_metrics": operator_rand_metrics,
+                "direct_joint_metrics": direct_rand_metrics,
+            }
+
         results = {
             "artifact": artifact_path,
             "mm3_metrics": mm3_metrics,
@@ -529,6 +655,7 @@ def run_single_analysis(
             "operator_singular_values": operator_singular_values,
             "kronecker_singular_values": coef_z_singular_values,
             "direct_joint_metrics": direct_metrics,
+            "random_baseline_metrics": random_baseline_metrics,
             "num_samples": num_samples,
             "kronecker_rank": kronecker_rank,
             "operator_rank": operator_rank,
